@@ -219,6 +219,54 @@ FETCH_ENABLED = True    # True=启用实时取数；False=暂时关闭（离线 
 - **图标尺寸回归**：`scripts/check_ptsize.js`（jsdom，先点 `.tabbtn[data-tab="t2"]` 触发地图渲染再断言）——圆点半径落在 `PT_R` 三档内、无旧值 9/10/11、`updatePoints()` 改色后仍在同一档、无运行期错误。用法同 `test_touch.js`。
 - **降水分级回归**：`scripts/check_rain.js <某个看板.html>`（jsdom；把 `peaksNear.pHourMax` 依次改成 0/1.2/2.5/6/12 看「降水 / 短时强降水」卡片等级与文案，再直接喂 `riskClassAtHour()` 0.3/1/2/4.9/5/10 校验 ok→warn→danger 边界）。注意：卡片文案里数值带空格（`最大小时降水 6 mm/h`），断言要用**去空白后的字符串**，否则正则永远不中。
 
+  8. **页头背景图（2026-09-28）**：页头到三个页签这一整片区域铺一张照片作**背景**（base64 内嵌 + 白色渐隐），**不额外占版面**。详见下节「页头背景图（hero 背景层）」。
+  9. **气象要素小图标（2026-09-28）**：关键指标、影响建议卡、图表图例、要素勾选行、48h 读数行的要素名前面统一带图标，**图形＝要素、色块底色＝风险程度**。详见下节「气象要素小图标」。
+
+## 页头背景图（hero 背景层，2026-09-28 新增）
+
+从页面顶部到**三个页签下沿**这一整片区域，铺一张**照片背景**（雪山/作业场景）。做法是「base64 内嵌 + 白色渐隐遮罩」，产物仍是**单文件 HTML**（可直接传 S3 / 离线打开，不依赖外链图片）。
+
+- **不是卡片、不占版面**：`<header>` 与 `.tabs` 被包进一个 `.heroarea` 容器，照片挂在 `.heroarea::before`（`position:absolute; z-index:-1`）上，用**负 inset 向外出血**到屏幕两边。因此 `header` 高度、`.tabs` 位置与没有背景图时**逐像素一致**（实测 header 88px、页签底 156px），只是背后多了一张图。
+- **图片资源**：`assets/hero-bg.jpg`。当前为雪原勘探场景（1440×485、约 112 KB）。原图整体亮度 210–252、近乎全白，**必须先做调色**（裁到「雪山+作业面」信息带 + 提对比 1.45 / 提饱和 1.35 / 压亮度 0.84 + `autocontrast`），否则当背景看就是一片白。
+- **内嵌方式**：`build_dashboard.py` 的 `hero_css()` 读该文件 → base64 data URI → 替换样式块里的注释占位 `/*__HERO_CSS__*/`。生成时打印 `hero bg: embedded`；文件缺失则打印 `hero bg SKIPPED: ...` 并**静默降级为原样页头**（不报错、不影响其他功能）。
+- **可调参数**（都在 `build_dashboard.py` 顶部附近）：
+  | 常量 | 作用 | 当前值 |
+  |---|---|---|
+  | `_HERO_IMG` | 图片路径（相对脚本 `../assets/hero-bg.jpg`） | — |
+  | `HERO_BLEED` | 背景向左右/上下的**出血量**（与 `body` padding 对齐，做到满屏宽） | `"16px"` |
+  | `HERO_POS_Y` | 照片纵向取景（百分比越大越往下取景） | `"center"` |
+  | `HERO_FADE` | 自上而下的白色渐隐色标：顶部较白保证导航/标题清晰，底部几乎全透露出照片 | `.78/0% → .38/42% → .02/100%` |
+- **文字可读性兜底**：`hero_css()` 顺带把 `header>.meta` 字色压深到 `#4B545C`、给 `h1`/`.meta` 加极淡白描边（`text-shadow`）——照片变清楚后，12px 小字容易发飘。
+- **换图**：把新图覆盖 `assets/hero-bg.jpg` 即可；建议宽度 1440、JPEG quality 80（base64 后约 100~120 KB，单页 HTML 增量可接受）。若原图偏亮，先按上面那套调色再落盘。
+- **改完必须离线重渲染才生效**（模板改动不会被已有 HTML 自动套用）：
+  `<PY> <SKILLS>/scripts/build_dashboard.py --name "<中文名>" --data <BEIDOU>/wutan/data/<pin>_data.json --outdir <BEIDOU>/wutan/html --outfile <pin>.html`
+- **验证要点**：① 文字可读性（导航按钮、标题、元信息行）；② **版面零位移** —— 渲染后量 `header` 高度与 `.tabs` 底边，应与无背景图时完全一致；③ 地图/图表功能无回归（切 Tab、点采样点出图、48h 图 1 张 / 2 周图 3 张、零 JS 报错）。截图验证用托管 venv 的 playwright（`chromium` 已装），430px 视口即可。
+- 石油工程侧（`weather-engineering-data` 的 `render_points_html.py`）**尚未同步此特性**，如需保持一致需另行移植。
+
+## 气象要素小图标（2026-09-28 新增）
+
+在**所有出现气象要素的关键位置**，要素名前面带一个 19×19（小号 16×16）的小图标：**图形＝是什么要素，色块底色＝风险程度**。一眼就能看出「这是什么要素 + 严重不严重」，不用读文字。
+
+- **两套底色语义（务必区分，别混用）**：
+  | 底色 | 含义 | 用在哪 |
+  |---|---|---|
+  | `.ok` 绿 / `.warn` 橙 / `.danger` 红 | **风险等级**（与风险区、徽标、地图圆点同一套色） | ①「关键指标」四格 ②「作业天气影响与建议」各卡标题 ③ 48h 读数行（随选时实时变色） |
+  | `.plain` 灰 | **不带风险含义**，只标识要素 | 图表图例（`ec-legend`）、逐要素勾选行 |
+- **要素图形**（`EIC` 常量，全部 24×24 线性 SVG，`stroke:currentColor`）：`rain` 雨云、`snow` 雪花、`wind` 风线、`temp` 温度计、`heat` 太阳、`fog` 雾（三条横线）。
+- **唯一入口**：JS 函数 `eic(kind, lvl, small)` → 返回 `<span class="eic …">` HTML 片段。`lvl` 只认 `ok/warn/danger`，传其他值（含 `undefined`）自动退回 `.plain` —— 防止出现无底色的「隐形图标」。
+- **单要素分级辅助函数**：`lvRain` / `lvGust` / `lvWind` / `lvTemp`（就在 `RAIN_H` 定义下方）。**阈值必须与 `riskClassAtHour` 完全一致**，不要各写一套。
+- **已覆盖的位置**（改模板时若新增要素展示区，请一并接上 `eic()`）：
+  1. `#statsBox` 关键指标四格（最高温 / 最低温 / 最大阵风 / 最大日降水）—— 首行 `.k` 内图标 + 要素名；
+  2. `card(level,title,badge,html,icon)` 第 5 个参数＝要素图标，影响建议各卡自动同色；
+  3. `ptLegendHtml(ic)` 与 `ELEM_DEFS[*].icon`：48h 合并图、2 周逐要素图的图例；
+  4. `#elemRowD` 三个勾选标签（JS 启动时注入，`input` 之后插入，图标与文字成组）；
+  5. `#riskReason` 读数行（降水/气温/阵风/均风）—— 图标底色随 `selectHour` 实时变化。
+- **flex 容器内不要重复加边距**：`.eic` 默认带 `margin-right:5px`，但 `.imp .h` / `.ec-legend` / `.elem-row label` 自带 `gap`，已用 CSS 规则把这三处的图标外边距清零，否则间距翻倍。
+- **改完必须离线重渲染**才生效（同 hero 背景图）：
+  `<PY> <SKILLS>/scripts/build_dashboard.py --name "<中文名>" --data <BEIDOU>/wutan/data/<pin>_data.json --outdir <BEIDOU>/wutan/html --outfile <pin>.html`
+- **验证要点**：`document.querySelectorAll('.eic').length` 应 ≈ 19~23（4 指标 + 影响卡数 + 图例 + 勾选行）；四格指标里**不允许出现 `class="eic o"` 这类残缺 class**（说明等级值写错了）；跑 `scripts/test_touch.js` 保证地图手势 14 项无回归。
+- 石油工程侧（`weather-engineering-data` 的 `render_points_html.py`）**尚未同步此特性**。
+
 ## 多项目总览页（index.html）
 
 > **本 skill 仅产出单个项目看板**：`build_dashboard.py` 只生成单个项目的 HTML + `_data.json`，**不生成** `index.html` 总览。多个项目的总览页（点击进入看板、看板可返回的小系统）由独立 skill **`weather-wutan-index`** 负责生成（从全部 `_data.json` 合并），详见该 skill。
