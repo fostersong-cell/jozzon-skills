@@ -92,7 +92,7 @@ def hero_css():
 # ---------------- 行政地名点位（地图叠加中文地名）----------------
 # 数据源：阿里云 DataV GeoAtlas（地级市/州/盟 363 + 县级 2814），一次性落盘，生成时离线筛选。
 # 坐标为 GCJ-02，与底图/采集点所用 WGS84 偏差 <1km，在地图尺度（1px≈0.5~2km）不可见。
-_PLACES_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "cn_places.json")
+_PLACES_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "cn_places.json")
 
 def pick_places(minlon, maxlon, minlat, maxlat, limit=600):
     """按工区范围 + 缓冲挑出周边行政驻地，供地图上叠加中文地名（1=地级市/州/盟，2=县/区）。"""
