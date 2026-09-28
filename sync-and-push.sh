@@ -13,39 +13,22 @@
 #   bash <仓库>/sync-and-push.sh --no-push   # 只提交不推送，用于先本地核对
 #
 # 说明：
-#   - 运行态目录默认取 ~/.workbuddy/skills/jozzon；找不到时回退工作区级 <WORK>/.workbuddy/skills/jozzon。
-#     可用 SKILLS=<路径> 强制指定。
+#   - 运行态技能目录固定为 ~/.workbuddy/skills/jozzon（WorkBuddy 唯一扫描位置）；可用 SKILLS=<路径> 强制指定。
 #   - 同步用 rsync -a（**不加 --delete**）：仓库里的 .git / install.sh / README.md 等必须保留。
 #   - 会跳过 __pycache__ / *.pyc / *.bak-* 备份目录。
 #   - 兼容 macOS 自带 bash 3.2（不用 mapfile / nameref）。
 set -eu
 
-# 定位工作区（仅用于回退工作区级布局）：优先环境变量，其次从脚本位置向上找含 beidou/ 的目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK="${WORK:-}"
-if [ -z "$WORK" ]; then
-  d="$SCRIPT_DIR"
-  i=0
-  while [ "$i" -lt 6 ]; do
-    if [ -d "$d/beidou" ]; then WORK="$d"; break; fi
-    d="$(dirname "$d")"
-    i=$((i + 1))
-  done
-fi
 
 # 仓库就在脚本所在目录
 REPO="$SCRIPT_DIR"
 
-# 运行态技能目录：优先用户级（WorkBuddy 真正扫描的位置），回退工作区级（旧布局）
+# 运行态技能目录：固定用户级（WorkBuddy 唯一扫描位置）
 SKILLS="${SKILLS:-$HOME/.workbuddy/skills/jozzon}"
 if [ ! -d "$SKILLS" ]; then
-  if [ -n "$WORK" ] && [ -d "$WORK/.workbuddy/skills/jozzon" ]; then
-    SKILLS="$WORK/.workbuddy/skills/jozzon"
-    printf '%s\n' "（未找到用户级技能目录，回退到工作区级：$SKILLS）"
-  else
-    echo "✗ 技能目录不存在。请先执行 install.sh 安装，或用 SKILLS=<路径> bash $0 指定。"
-    exit 1
-  fi
+  echo "✗ 技能目录不存在：$SKILLS。请先执行 install.sh 安装，或用 SKILLS=<路径> bash $0 指定。"
+  exit 1
 fi
 
 if [ ! -d "$REPO/.git" ]; then
