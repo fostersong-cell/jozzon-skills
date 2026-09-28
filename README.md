@@ -36,9 +36,9 @@ git pull && bash install.sh /path/to/work
 **A 机（改完技能后）**
 
 ```bash
-cd ~/Desktop/同步空间/foster/1.常用/github/jozzon-skills
+cd <工作区>/jozzon-skills                 # 即本机仓库，含 .git
 git add -A && git commit -m "说明" && git push
-cp -R ~/Desktop/同步空间/foster/1.常用/github/jozzon-skills /Volumes/<U盘盘符>/   # 整个目录连 .git 一起拷
+cp -R <工作区>/jozzon-skills /Volumes/<U盘盘符>/   # 整个目录连 .git 一起拷
 ```
 
 **B 机（插上 U 盘）**
