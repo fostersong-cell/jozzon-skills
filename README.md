@@ -1,6 +1,6 @@
 # jozzon-skills
 
-物探 / 石油工程天气看板相关的工作区技能集，7 个技能，跨机器通过 GitHub 同步。
+物探 / 石油工程天气看板相关技能集，7 个技能，跨机器通过 GitHub 同步。
 
 | 技能 | 作用 | 分类 |
 | --- | --- | --- |
@@ -12,84 +12,87 @@
 | `weather-engineering-index` | 井位总览页 + 近 2 天风险汇总 md | 石油工程 |
 | `s3-beidou-publish` | 看板产物上传到 S3（`jln-reports`） | 发布 |
 
+## 技能装在哪（先看这条，踩过坑）
+
+| 位置 | 是否被 WorkBuddy 扫描到 | 说明 |
+| --- | --- | --- |
+| **`~/.workbuddy/skills/jozzon/`** | ✅ **是** | **默认安装位置**，用户级，所有工作区都可见 |
+| `<工作区>/.workbuddy/skills/jozzon/` | ❌ 否 | 实测技能列表不收录，别装这儿 |
+
+判断依据：WorkBuddy 的技能列表由 `~/.workbuddy/.skill-list-cache.json` 驱动，
+它的 `scopeKey` / `watch.dirs` 只登记用户级目录（`~/.workbuddy/skills`、`connectors/skills`、内置插件目录），
+**不包含工作区的 `.workbuddy/skills`**；缓存 `results` 里的 `source` 也只有 `userSettings` / `plugin` 两种。
+所以放在工作区里的技能不会出现在技能列表中，虽然文件在那里，但模型看不到。
+
+技能加载器对子目录是递归的（≤5 层），所以 `jozzon/` 这一层分组不影响识别。
+
+> 换机器 / 重装后**必须重启 WorkBuddy**，缓存才会重扫。
+
 ## 同步方式
 
-### 场景一：两台机器都能上网（推荐，最省事）
+### 首次安装（另一台机器）
 
 ```bash
-# 首次：克隆到任意目录
 git clone https://github.com/fostersong-cell/jozzon-skills.git
-
-# 安装到某台电脑的工作区（目标工作区 = 含 beidou/ 的那一层）
 cd jozzon-skills
-bash install.sh /path/to/work     # 省略参数时会自动上溯查找含 beidou/ 的目录
-bash install.sh --dry-run         # 只打印计划，不写盘
-
-# 日常更新
-git pull && bash install.sh /path/to/work
+bash install.sh          # 装到 ~/.workbuddy/skills/jozzon/
 ```
 
-**上传（A 机改完技能后）** —— 一键脚本，把 `<WORK>/.workbuddy/skills/jozzon/`
-同步进仓库并 push：
+Windows：
 
-```bash
-bash <工作区>/jozzon-skills/sync-and-push.sh "改了什么，一句话说明"
-bash <工作区>/jozzon-skills/sync-and-push.sh --no-push   # 只同步+提交，不推送
+```powershell
+powershell -File install.ps1
 ```
 
-没有改动说明时会自动用时间戳兜底；仓库无变化则跳过 commit。
+装完重启 WorkBuddy。若该机器上还残留**旧版本**技能，先清掉再装（见下节）。
 
-### 另一台机器上怎么装（可能已经有旧版本技能）
-
-旧版本技能大概率散在以下位置（R18 之前是直接铺在用户级的）：
-
-```bash
-~/.workbuddy/skills/                       # 用户级，7 个技能直接铺在这儿
-<目标工作区>/.workbuddy/skills/             # 项目级，无 jozzon 分组
-<其它项目目录>/.workbuddy/skills/
-```
-
-**同一批技能名只要存在两处，加载器扫到会打架（结果不确定），所以先清旧再装。**
-
-**情形 A：这台机器还没 clone 过仓库**
-
-```bash
-cd <目标工作区>                     # 含 beidou/ 的那一层（技能要装到它的下一层）
-git clone https://github.com/fostersong-cell/jozzon-skills.git
-
-# 清掉旧技能（手动确认路径后再删；不确定的话先 mv 到废纸篓）
-rm -rf ~/.workbuddy/skills/weather-wutan-data ~/.workbuddy/skills/weather-wutan-html \
-       ~/.workbuddy/skills/weather-wutan-index \
-       ~/.workbuddy/skills/weather-engineering-data ~/.workbuddy/skills/weather-engineering-html \
-       ~/.workbuddy/skills/weather-engineering-index ~/.workbuddy/skills/s3-beidou-publish
-
-# Windows 用 PowerShell 版，用法等价
-#   powershell -File install.ps1
-
-bash jozzon-skills/install.sh --dry-run   # 先看计划（应列出 7 个技能、0 个备份）
-bash jozzon-skills/install.sh              # 正式安装
-```
-
-**情形 B：已经 clone 过，只是同步远端的最新版**
+### 日常：远端有新版，本机更新
 
 ```bash
 cd jozzon-skills
 git pull
-bash install.sh          # 装到自己工作区；漏参数时自动上溯找含 beidou/ 的目录
+bash install.sh
 ```
 
-**情形 C：本机是 Windows**
+### 上传：本机改了技能，推到 GitHub
 
-- 用 `powershell -File install.ps1`，或 Git Bash / WSL 下跑 `install.sh` 也行。
-- Git for Windows 安装向导里勾上 **Enable UTF-8 action names**，工作区路径含中文时更稳。
-- 建议把仓库直接 clone 到 `<目标工作区>/jozzon-skills/`，`install.sh` 省略路径即可自动定位。
+```bash
+bash <仓库>/sync-and-push.sh "改了什么，一句话说明"
+bash <仓库>/sync-and-push.sh --no-push   # 只同步+提交，不推送，用于先本地核对
+```
 
-**装完必做的三件事**
+没有改动说明时自动用时间戳兜底；仓库无变化则跳过 commit。
 
-1. **重启 WorkBuddy**，否则加载器不会重新扫描技能。
-2. 确认 7 个技能都在、且只有一套（没有 `xxx.bak-时间戳` 残留目录）。
-3. 确认 `<PY>` / `<NODE>` 等占位符在本机的实际值（各 SKILL.md 开头都有对照表，一般不用改），
-   然后冒烟测一个只读命令，例如 `bash install.sh --dry-run` 或直接跑一次 `gen_subindex.py`。
+### 另一台机器上已经有旧版本技能
+
+旧版本技能大概率散在这些位置（早期是直接铺在用户级的）：
+
+```bash
+~/.workbuddy/skills/<技能名>/              # 用户级，平铺
+<工作区>/.workbuddy/skills/                # 工作区级（当前版本不生效）
+<其它项目目录>/.workbuddy/skills/
+```
+
+**同一批技能名存在两处时加载结果不确定，先清旧再装。** `install.sh` 会自动检测
+用户级是否已平铺同名技能并给出提示。
+
+```bash
+cd <工作区>
+git clone https://github.com/fostersong-cell/jozzon-skills.git
+
+bash jozzon-skills/install.sh --dry-run   # 预演：应列出 7 个技能
+bash jozzon-skills/install.sh             # 正式安装（用户级）
+```
+
+**Windows**：用 `powershell -File install.ps1`，或 Git Bash / WSL 下跑 `install.sh`。
+Git for Windows 安装向导里勾上 **Enable UTF-8 action names**，工作区路径含中文时更稳。
+
+**装完必做**
+
+1. **重启 WorkBuddy**，否则加载器不会重新扫描。
+2. 确认 7 个技能都在，且没有 `xxx.bak-<时间戳>` 残留目录。
+3. 确认 `<PY>` / `<NODE>` 在本机的实际值（各 SKILL.md 开头有对照表，一般不用改），
+   冒烟跑一次只读命令确认可用。
 
 ### 场景二：只能通过 U 盘 / 移动硬盘手工拷贝
 
@@ -107,31 +110,12 @@ cp -R <工作区>/jozzon-skills /Volumes/<U盘盘符>/   # 整个目录连 .git 
 
 ```bash
 cd /Volumes/<U盘盘符>/jozzon-skills
-git pull                    # 确保是远端最新版（A 机 push 后的完整副本，通常已是最新）
-bash install.sh <B机工作区路径>
+git pull                    # 确保是远端最新版
+bash install.sh             # 装到用户级
 ```
 
 若 B 机也要改技能，在 U 盘这份里改完再拷回去：
 `git add -A && git commit -m "..." && git push`，然后把更新后的目录拷回 U 盘。
-
-> 只拷 `install.sh` / `install.ps1` 和技能文件夹、不带 `.git` 也能用（见「改动回传」），
-> 但那样就没有版本追溯了，建议整目录拷贝。
-
-**Windows**：用 PowerShell 版，用法等价：
-
-```powershell
-powershell -File install.ps1 C:\path\to\work     # 省略参数时会自动上溯查找含 beidou\ 的目录
-powershell -File install.ps1 -DryRun
-```
-
-Git Bash / WSL 下 `install.sh` 同样可用。两个脚本都会跳过 `__pycache__` 与 `*.pyc`，
-并把同名旧技能备份为 `<技能名>.bak-<时间戳>`（先清掉上一次的旧备份，不堆积）。
-
-安装脚本会把 7 个技能复制到 `<目标工作区>/.workbuddy/skills/jozzon/` 下。
-**技能加载器递归扫描该目录 ≤5 层**，所以 `jozzon/` 这一层分组不影响识别；
-安装后重启 WorkBuddy 即可看到技能。
-
-若目标工作区里已存在同名技能，旧目录会自动备份，不会直接覆盖。
 
 ## 路径占位符（跨平台 · macOS / Windows 通用）
 
@@ -140,7 +124,7 @@ SKILL.md 里的命令刻意不含任何某一台机器的绝对路径，全部�
 | 占位符 | 含义 | macOS 典型值 | Windows 典型值 |
 | --- | --- | --- | --- |
 | `<WORK>` | 工作区根（含 `beidou/`） | `~/Desktop/.../AI/work` | `C:\...\AI\work` |
-| `<SKILLS>` | 本技能所在目录 | `<WORK>/.workbuddy/skills/jozzon/<技能名>/` | 同左 |
+| `<SKILLS>` | 本技能所在目录 | `~/.workbuddy/skills/jozzon/<技能名>/` | 同左 |
 | `<BEIDOU>` | 看板根 | `<WORK>/beidou` | 同左 |
 | `<PY>` | Python 3 解释器 | 托管 venv `.../bin/python`，或 `python3` | 托管 venv `...\Scripts\python.exe`，或 `python` |
 | `<NODE>` | Node 解释器 | `node` | `node.exe` |
@@ -162,14 +146,14 @@ SKILL.md 里的命令刻意不含任何某一台机器的绝对路径，全部�
 
 ## 改动回传（在 A 机改了技能后）
 
-1. 先跑一遍确认功能正常（例如 `bash install.sh --dry-run` 或直接执行脚本）。
-2. A 机：改的是**运行态**技能目录 `<WORK>/.workbuddy/skills/jozzon/`，
-   然后 `bash <工作区>/jozzon-skills/sync-and-push.sh "说明"`；
+1. 先跑一遍确认功能正常。
+2. 改的是**运行态**目录 `~/.workbuddy/skills/jozzon/`（WorkBuddy 加载的就是它），
+   然后 `bash <仓库>/sync-and-push.sh "说明"`；
    或手工在仓库目录 `git add -A && git commit -m "说明" && git push`。
-3. B 机：`git pull && bash install.sh <工作区路径>`。
+3. 在 B 机：`git pull && bash install.sh`。
 
-> 注意：WorkBuddy 只加载 `<工作区>/.workbuddy/skills/jozzon/` 下那份，
-> `<工作区>/jozzon-skills/` 只是仓库副本，**改技能要改前者再同步**，顺序反了会白改。
+> 顺序别反：改运行态 → 同步到仓库 → push。
+> 直接改仓库里的副本不会生效，因为加载器读的是运行态那份。
 
 ## 约定速查
 
@@ -177,4 +161,5 @@ SKILL.md 里的命令刻意不含任何某一台机器的绝对路径，全部�
 - 数据源 Open-Meteo（免费层按 UTC 日历日限额，跑前建议探测配额，遇 429 约北京时间 08:00 恢复）。
 - 看板页脚统一口径：山区小气候可能强于模式预报，以现场实测为准；页头外链指向 `https://leidian.wang`。
 - 产物命名一律拼音，HTML 放 `html/`，`_data.json` 放 `data/`。
+- 索引分工：物探总览 ← `gen_subindex.py --only wutan`；石油工程总览 ← `build_points_index.py`。
 - 校验方式：`py_compile` / `node --check` 查语法，jsdom 脚本回归内联 JS。

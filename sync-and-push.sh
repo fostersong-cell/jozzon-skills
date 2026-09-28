@@ -2,22 +2,25 @@
 # 技能「修改 → 上 GitHub」一键脚本。
 #
 # 做什么：
-#   1. 把运行态技能目录 <WORK>/.workbuddy/skills/jozzon/ 同步到本仓库 <WORK>/jozzon-skills/
+#   1. 把运行态技能目录 ~/.workbuddy/skills/jozzon/ 同步到本仓库
 #   2. git add -A / commit / push（没有改动时会跳过 commit 并提示）
 #
-# 用法（在工作区任意位置执行均可）：
-#   bash <工作区>/jozzon-skills/sync-and-push.sh "改动说明"
-#   MSG="改动说明" bash <工作区>/jozzon-skills/sync-and-push.sh
-#   COMMIT_MSG="改动说明" bash <工作区>/jozzon-skills/sync-and-push.sh   # 等价写法
-#   bash <工作区>/jozzon-skills/sync-and-push.sh --no-push   # 只提交不推送，用于先本地核对
+# 用法（在任意位置执行均可，仓库路径即脚本所在目录）：
+#   bash ~/.workbuddy/skills/jozzon-sync/sync-and-push.sh "改动说明"   # 或仓库里的实际路径
+#   bash <仓库>/sync-and-push.sh "改动说明"
+#   MSG="改动说明" bash <仓库>/sync-and-push.sh
+#   COMMIT_MSG="改动说明" bash <仓库>/sync-and-push.sh   # 等价写法
+#   bash <仓库>/sync-and-push.sh --no-push   # 只提交不推送，用于先本地核对
 #
 # 说明：
+#   - 运行态目录默认取 ~/.workbuddy/skills/jozzon；找不到时回退工作区级 <WORK>/.workbuddy/skills/jozzon。
+#     可用 SKILLS=<路径> 强制指定。
 #   - 同步用 rsync -a（**不加 --delete**）：仓库里的 .git / install.sh / README.md 等必须保留。
 #   - 会跳过 __pycache__ / *.pyc / *.bak-* 备份目录。
 #   - 兼容 macOS 自带 bash 3.2（不用 mapfile / nameref）。
 set -eu
 
-# 定位工作区：优先环境变量，其次从脚本位置向上找含 beidou/ 的目录
+# 定位工作区（仅用于回退工作区级布局）：优先环境变量，其次从脚本位置向上找含 beidou/ 的目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${WORK:-}"
 if [ -z "$WORK" ]; then
@@ -30,18 +33,21 @@ if [ -z "$WORK" ]; then
   done
 fi
 
-if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
-  echo "✗ 找不到工作区（需含 beidou/ 的那一层）。请用 WORK=<路径> bash $0 指定。"
-  exit 1
-fi
+# 仓库就在脚本所在目录
+REPO="$SCRIPT_DIR"
 
-SKILLS="$WORK/.workbuddy/skills/jozzon"
-REPO="$WORK/jozzon-skills"
-
+# 运行态技能目录：优先用户级（WorkBuddy 真正扫描的位置），回退工作区级（旧布局）
+SKILLS="${SKILLS:-$HOME/.workbuddy/skills/jozzon}"
 if [ ! -d "$SKILLS" ]; then
-  echo "✗ 技能目录不存在：$SKILLS"
-  exit 1
+  if [ -n "$WORK" ] && [ -d "$WORK/.workbuddy/skills/jozzon" ]; then
+    SKILLS="$WORK/.workbuddy/skills/jozzon"
+    printf '%s\n' "（未找到用户级技能目录，回退到工作区级：$SKILLS）"
+  else
+    echo "✗ 技能目录不存在。请先执行 install.sh 安装，或用 SKILLS=<路径> bash $0 指定。"
+    exit 1
+  fi
 fi
+
 if [ ! -d "$REPO/.git" ]; then
   echo "✗ 仓库目录不像 git 仓库：$REPO"
   exit 1
