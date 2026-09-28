@@ -29,6 +29,16 @@ bash install.sh --dry-run         # 只打印计划，不写盘
 git pull && bash install.sh /path/to/work
 ```
 
+**上传（A 机改完技能后）** —— 一键脚本，把 `<WORK>/.workbuddy/skills/jozzon/`
+同步进仓库并 push：
+
+```bash
+bash <工作区>/jozzon-skills/sync-and-push.sh "改了什么，一句话说明"
+bash <工作区>/jozzon-skills/sync-and-push.sh --no-push   # 只同步+提交，不推送
+```
+
+没有改动说明时会自动用时间戳兜底；仓库无变化则跳过 commit。
+
 ### 场景二：只能通过 U 盘 / 移动硬盘手工拷贝
 
 远端始终是唯一权威版本，U 盘只负责搬运，不会造成两台机器各改各的。
@@ -101,8 +111,13 @@ SKILL.md 里的命令刻意不含任何某一台机器的绝对路径，全部�
 ## 改动回传（在 A 机改了技能后）
 
 1. 先跑一遍确认功能正常（例如 `bash install.sh --dry-run` 或直接执行脚本）。
-2. 在仓库目录：`git add -A && git commit -m "说明" && git push`。
-3. 在 B 机：`git pull && bash install.sh <工作区路径>`。
+2. A 机：改的是**运行态**技能目录 `<WORK>/.workbuddy/skills/jozzon/`，
+   然后 `bash <工作区>/jozzon-skills/sync-and-push.sh "说明"`；
+   或手工在仓库目录 `git add -A && git commit -m "说明" && git push`。
+3. B 机：`git pull && bash install.sh <工作区路径>`。
+
+> 注意：WorkBuddy 只加载 `<工作区>/.workbuddy/skills/jozzon/` 下那份，
+> `<工作区>/jozzon-skills/` 只是仓库副本，**改技能要改前者再同步**，顺序反了会白改。
 
 ## 约定速查
 
