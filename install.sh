@@ -92,6 +92,15 @@ fi
 copied=0
 backed=0
 
+# 旧版本备份的存放位置，必须**在技能扫描目录之外**。
+# ⚠️ 踩过的坑（2026-09-28）：备份若留在 $DEST 里（即 $name.bak-<时间戳>/），WorkBuddy 会
+#    递归扫描 jozzon/ 并把里面的 SKILL.md 当成技能，于是多出 N 个叫「xxx.bak-2026…」的假技能。
+#    所以统一挪到 ~/.workbuddy/skills-backup/ 下（skills/ 的兄弟目录，不在扫描根内）。
+BAKBASE="${JOZZON_BAK:-$HOME/.workbuddy/skills-backup}"
+if [ "$DRY_RUN" = "0" ]; then
+  mkdir -p "$BAKBASE"
+fi
+
 for skill in "$REPO_DIR"/*/; do
   [ -d "$skill" ] || continue
   name="$(basename "$skill")"
@@ -102,16 +111,16 @@ for skill in "$REPO_DIR"/*/; do
   if [ -e "$dst" ]; then
     # 先清掉上一次的旧备份，避免多次重装后堆积（dry-run 时也必须跳过，不能真删）
     if [ "$DRY_RUN" = "0" ]; then
-      for old in "$dst".bak-*; do
+      for old in "$BAKBASE/$name".bak-*; do
         if [ -e "$old" ]; then rm -rf "$old"; fi
       done
     fi
     stamp="$(date +%Y%m%d-%H%M%S)"
     if [ "$DRY_RUN" = "0" ]; then
-      mv "$dst" "$dst.bak-$stamp"
+      mv "$dst" "$BAKBASE/$name.bak-$stamp"
     fi
     backed=$((backed + 1))
-    printf '%s\n' "· $name 已存在 → 旧目录备份为 $name.bak-$stamp"
+    printf '%s\n' "· $name 已存在 → 旧目录备份到 $BAKBASE/$name.bak-$stamp"
   fi
 
   if [ "$DRY_RUN" = "0" ]; then
@@ -123,4 +132,5 @@ done
 
 printf '\n'
 printf '%s\n' "完成：新装 $copied 个技能，备份 $backed 个同名旧目录。"
+printf '%s\n' "旧版本位于 $BAKBASE/（在技能扫描目录之外，不会被识别成技能）。"
 printf '%s\n' "重启 WorkBuddy 后技能即可识别。"

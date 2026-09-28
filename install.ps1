@@ -81,6 +81,12 @@ if ($MODE -eq 'user') {
 $copied = 0
 $backed = 0
 
+# 旧版本备份的存放位置，必须**在技能扫描目录之外**（与 install.sh 同策略，2026-09-28 修复）。
+# 备份若留在 $DEST 里，WorkBuddy 递归扫描 jozzon/ 会把里面的 SKILL.md 当成技能，
+# 于是多出 N 个叫「xxx.bak-2026…」的假技能。
+$envBak = if ($env:JOZZON_BAK) { $env:JOZZON_BAK } else { Join-Path $env:USERPROFILE ".workbuddy\skills-backup" }
+if (-not $DryRun) { New-Item -ItemType Directory -Path $envBak -Force | Out-Null }
+
 Get-ChildItem -Path $REPO -Directory | ForEach-Object {
   $name = $_.Name
   if ($name -eq '.git') { return }
@@ -91,12 +97,12 @@ Get-ChildItem -Path $REPO -Directory | ForEach-Object {
   if (Test-Path $dst) {
     if (-not $DryRun) {
       # 先清掉上一次的旧备份，避免多次重装后堆积
-      Remove-Item -Path (Join-Path $DEST "$name.bak-*") -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item -Path (Join-Path $envBak "$name.bak-*") -Recurse -Force -ErrorAction SilentlyContinue
       $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-      Rename-Item -Path $dst -NewName "$name.bak-$stamp"
+      Move-Item -Path $dst -Destination (Join-Path $envBak "$name.bak-$stamp") -Force
     }
     $backed = $backed + 1
-    Write-Host "· $name 已存在 -> 旧目录备份为 $name.bak"
+    Write-Host "· $name 已存在 -> 旧目录备份到 $envBak\$name.bak"
   }
 
   if (-not $DryRun) { Copy-Item -Path $_.FullName -Destination $DEST -Recurse -Force }
