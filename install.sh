@@ -66,10 +66,12 @@ for skill in "$REPO_DIR"/*/; do
   dst="$DEST/$name"
 
   if [ -e "$dst" ]; then
-    # 先清掉上一次的旧备份，避免多次重装后堆积
-    for old in "$dst".bak-*; do
-      if [ -e "$old" ]; then rm -rf "$old"; fi
-    done
+    # 先清掉上一次的旧备份，避免多次重装后堆积（dry-run 时也必须跳过，不能真删）
+    if [ "$DRY_RUN" = "0" ]; then
+      for old in "$dst".bak-*; do
+        if [ -e "$old" ]; then rm -rf "$old"; fi
+      done
+    fi
     stamp="$(date +%Y%m%d-%H%M%S)"
     if [ "$DRY_RUN" = "0" ]; then
       mv "$dst" "$dst.bak-$stamp"

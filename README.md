@@ -39,6 +39,58 @@ bash <工作区>/jozzon-skills/sync-and-push.sh --no-push   # 只同步+提交�
 
 没有改动说明时会自动用时间戳兜底；仓库无变化则跳过 commit。
 
+### 另一台机器上怎么装（可能已经有旧版本技能）
+
+旧版本技能大概率散在以下位置（R18 之前是直接铺在用户级的）：
+
+```bash
+~/.workbuddy/skills/                       # 用户级，7 个技能直接铺在这儿
+<目标工作区>/.workbuddy/skills/             # 项目级，无 jozzon 分组
+<其它项目目录>/.workbuddy/skills/
+```
+
+**同一批技能名只要存在两处，加载器扫到会打架（结果不确定），所以先清旧再装。**
+
+**情形 A：这台机器还没 clone 过仓库**
+
+```bash
+cd <目标工作区>                     # 含 beidou/ 的那一层（技能要装到它的下一层）
+git clone https://github.com/fostersong-cell/jozzon-skills.git
+
+# 清掉旧技能（手动确认路径后再删；不确定的话先 mv 到废纸篓）
+rm -rf ~/.workbuddy/skills/weather-wutan-data ~/.workbuddy/skills/weather-wutan-html \
+       ~/.workbuddy/skills/weather-wutan-index \
+       ~/.workbuddy/skills/weather-engineering-data ~/.workbuddy/skills/weather-engineering-html \
+       ~/.workbuddy/skills/weather-engineering-index ~/.workbuddy/skills/s3-beidou-publish
+
+# Windows 用 PowerShell 版，用法等价
+#   powershell -File install.ps1
+
+bash jozzon-skills/install.sh --dry-run   # 先看计划（应列出 7 个技能、0 个备份）
+bash jozzon-skills/install.sh              # 正式安装
+```
+
+**情形 B：已经 clone 过，只是同步远端的最新版**
+
+```bash
+cd jozzon-skills
+git pull
+bash install.sh          # 装到自己工作区；漏参数时自动上溯找含 beidou/ 的目录
+```
+
+**情形 C：本机是 Windows**
+
+- 用 `powershell -File install.ps1`，或 Git Bash / WSL 下跑 `install.sh` 也行。
+- Git for Windows 安装向导里勾上 **Enable UTF-8 action names**，工作区路径含中文时更稳。
+- 建议把仓库直接 clone 到 `<目标工作区>/jozzon-skills/`，`install.sh` 省略路径即可自动定位。
+
+**装完必做的三件事**
+
+1. **重启 WorkBuddy**，否则加载器不会重新扫描技能。
+2. 确认 7 个技能都在、且只有一套（没有 `xxx.bak-时间戳` 残留目录）。
+3. 确认 `<PY>` / `<NODE>` 等占位符在本机的实际值（各 SKILL.md 开头都有对照表，一般不用改），
+   然后冒烟测一个只读命令，例如 `bash install.sh --dry-run` 或直接跑一次 `gen_subindex.py`。
+
 ### 场景二：只能通过 U 盘 / 移动硬盘手工拷贝
 
 远端始终是唯一权威版本，U 盘只负责搬运，不会造成两台机器各改各的。
