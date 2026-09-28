@@ -1,0 +1,77 @@
+# jozzon-skills 安装脚本（Windows / PowerShell 版，与 install.sh 等价）
+#
+# 用法：
+#   powershell -File install.ps1 <目标工作区路径>   # 目标工作区 = 含 beidou\ 的那一层（如 ...\AI\work）
+#   powershell -File install.ps1 -DryRun            # 只打印计划，不写盘
+#
+# 说明：
+#   - 同名旧目录会先备份为 <name>.bak-<时间戳>，并清掉上一次的旧备份，避免堆积。
+#   - 会跳过 __pycache__ 与 *.pyc（平台产物的脏数据）。
+#   - 装完重启 WorkBuddy，技能加载器即可扫描到（加载器递归扫描 ≤5 层）。
+
+param(
+  [string]$TargetWork,
+  [switch]$DryRun
+)
+
+$ErrorActionPreference = 'Stop'
+$REPO = Split-Path -Parent $MyInvocation.MyCommand.Path
+$SKILLS_NAME = 'jozzon'
+
+# 未指定目标时：从仓库位置逐级上溯，找含 beidou\ 的目录
+if (-not $TargetWork) {
+  $d = $REPO
+  for ($i = 0; $i -lt 6; $i++) {
+    if (Test-Path (Join-Path $d 'beidou')) { $TargetWork = $d; break }
+    $d = Split-Path -Parent $d
+  }
+}
+
+if (-not $TargetWork) {
+  Write-Host '用法: powershell -File install.ps1 <目标工作区路径>   （目标工作区 = 含 beidou\ 的目录）'
+  exit 1
+}
+
+if (-not (Test-Path $TargetWork)) {
+  Write-Host "错误：目标工作区不存在 -> $TargetWork"
+  exit 1
+}
+
+$DEST = Join-Path (Join-Path $TargetWork '.workbuddy') (Join-Path 'skills' $SKILLS_NAME)
+if (-not $DryRun) {
+  New-Item -ItemType Directory -Force -Path $DEST | Out-Null
+}
+
+Write-Host "仓库：$REPO"
+Write-Host "目标：$DEST"
+if ($DryRun) { Write-Host '(dry-run，不写盘)' }
+
+$copied = 0
+$backed = 0
+
+Get-ChildItem -Path $REPO -Directory | ForEach-Object {
+  $name = $_.Name
+  if ($name -eq '.git') { return }
+  $dst = Join-Path $DEST $name
+  $all = Get-ChildItem -Path $_.FullName -File -Recurse
+  $srcFiles = @($all | Where-Object { $_.FullName -notmatch '__pycache__' -and $_.Extension -ne '.pyc' }).Count
+
+  if (Test-Path $dst) {
+    if (-not $DryRun) {
+      # 先清掉上一次的旧备份，避免多次重装后堆积
+      Remove-Item -Path (Join-Path $DEST "$name.bak-*") -Recurse -Force -ErrorAction SilentlyContinue
+      $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+      Rename-Item -Path $dst -NewName "$name.bak-$stamp"
+    }
+    $backed = $backed + 1
+    Write-Host "· $name 已存在 -> 旧目录备份为 $name.bak"
+  }
+
+  if (-not $DryRun) { Copy-Item -Path $_.FullName -Destination $DEST -Recurse -Force }
+  Write-Host "  [OK] $name  $srcFiles files"
+  $copied = $copied + 1
+}
+
+Write-Host ''
+Write-Host "完成：新装 $copied 个技能，备份 $backed 个同名旧目录。"
+Write-Host '重启 WorkBuddy 后技能即可识别。'

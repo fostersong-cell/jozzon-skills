@@ -1,0 +1,15 @@
+# Python 平台产物
+__pycache__/
+*.py[cod]
+*.pyc
+
+# 系统/平台脏数据
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 安装脚本留下的旧技能备份
+*.bak-*
+
+# Node
+node_modules/
