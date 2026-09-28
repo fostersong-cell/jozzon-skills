@@ -14,18 +14,46 @@
 
 ## 同步方式
 
-```bash
-# 1) 首次：克隆到任意目录
-git clone git@github.com:<owner>/jozzon-skills.git
+### 场景一：两台机器都能上网（推荐，最省事）
 
-# 2) 安装到某台电脑的工作区（目标工作区 = 含 beidou/ 的那一层）
+```bash
+# 首次：克隆到任意目录
+git clone https://github.com/fostersong-cell/jozzon-skills.git
+
+# 安装到某台电脑的工作区（目标工作区 = 含 beidou/ 的那一层）
 cd jozzon-skills
 bash install.sh /path/to/work     # 省略参数时会自动上溯查找含 beidou/ 的目录
 bash install.sh --dry-run         # 只打印计划，不写盘
 
-# 3) 日常更新
+# 日常更新
 git pull && bash install.sh /path/to/work
 ```
+
+### 场景二：只能通过 U 盘 / 移动硬盘手工拷贝
+
+远端始终是唯一权威版本，U 盘只负责搬运，不会造成两台机器各改各的。
+
+**A 机（改完技能后）**
+
+```bash
+cd ~/Desktop/同步空间/foster/1.常用/github/jozzon-skills
+git add -A && git commit -m "说明" && git push
+cp -R ~/Desktop/同步空间/foster/1.常用/github/jozzon-skills /Volumes/<U盘盘符>/   # 整个目录连 .git 一起拷
+```
+
+**B 机（插上 U 盘）**
+
+```bash
+cd /Volumes/<U盘盘符>/jozzon-skills
+git pull                    # 确保是远端最新版（A 机 push 后的完整副本，通常已是最新）
+bash install.sh <B机工作区路径>
+```
+
+若 B 机也要改技能，在 U 盘这份里改完再拷回去：
+`git add -A && git commit -m "..." && git push`，然后把更新后的目录拷回 U 盘。
+
+> 只拷 `install.sh` / `install.ps1` 和技能文件夹、不带 `.git` 也能用（见「改动回传」），
+> 但那样就没有版本追溯了，建议整目录拷贝。
 
 **Windows**：用 PowerShell 版，用法等价：
 
