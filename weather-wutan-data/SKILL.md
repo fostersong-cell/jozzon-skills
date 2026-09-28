@@ -10,7 +10,7 @@ description: 物探/野外项目2周天气看板生成器：输入由数据采�
 | 占位符 | 含义 | macOS 典型值 | Windows 典型值 |
 |---|---|---|---|
 | `<WORK>` | 工作区根（其下含 `beidou/`） | `~/Desktop/.../AI/work` | `C:\...\AI\work` |
-| `<SKILLS>` | 技能根（本技能所在目录） | `<WORK>/.workbuddy/skills/jozzon/weather-wutan-data` | 同左 |
+| `<SKILLS>` | 技能根（本技能所在目录，用户级） | `~/.workbuddy/skills/jozzon/weather-wutan-data` | `%USERPROFILE%\.workbuddy\skills\jozzon\weather-wutan-data` |
 | `<BEIDOU>` | 看板根 | `<WORK>/beidou` | 同左 |
 | `<PY>` | Python 3 解释器 | 托管 venv `.../bin/python`，或系统 `python3` | 托管 venv `...\Scripts\python.exe`，或 `python` |
 | `<NODE>` | Node.js 解释器 | `node` | `node.exe` |

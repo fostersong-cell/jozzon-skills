@@ -6,7 +6,7 @@
 #   2. git add -A / commit / push（没有改动时会跳过 commit 并提示）
 #
 # 用法（在任意位置执行均可，仓库路径即脚本所在目录）：
-#   bash ~/.workbuddy/skills/jozzon-sync/sync-and-push.sh "改动说明"   # 或仓库里的实际路径
+#   bash <仓库>/sync-and-push.sh "改动说明"   # 仓库即本文件所在目录（jozzon-skills/）
 #   bash <仓库>/sync-and-push.sh "改动说明"
 #   MSG="改动说明" bash <仓库>/sync-and-push.sh
 #   COMMIT_MSG="改动说明" bash <仓库>/sync-and-push.sh   # 等价写法

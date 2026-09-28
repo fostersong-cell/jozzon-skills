@@ -10,7 +10,7 @@ description: 石油工程（钻井/管线点位）天气看板「未来 2 周」
 | 占位符 | 含义 | macOS 典型值 | Windows 典型值 |
 |---|---|---|---|
 | `<WORK>` | 工作区根（其下含 `beidou/`） | `~/Desktop/.../AI/work` | `C:\...\AI\work` |
-| `<SKILLS>` | 技能根（本技能所在目录） | `<WORK>/.workbuddy/skills/jozzon/weather-engineering-index` | 同左 |
+| `<SKILLS>` | 技能根（本技能所在目录，用户级） | `~/.workbuddy/skills/jozzon/weather-engineering-index` | `%USERPROFILE%\.workbuddy\skills\jozzon\weather-engineering-index` |
 | `<BEIDOU>` | 看板根 | `<WORK>/beidou` | 同左 |
 | `<PY>` | Python 3 解释器 | 托管 venv `.../bin/python`，或系统 `python3` | 托管 venv `...\Scripts\python.exe`，或 `python` |
 | `<NODE>` | Node.js 解释器 | `node` | `node.exe` |
