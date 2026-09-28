@@ -147,9 +147,11 @@ $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
 产出：
 - `engineering/html/{拼音}.html` —— **每个点位一张独立无地图看板**（重点关注横幅·按风险变色 / 关键指标四宫格 / 逐日降水柱+气温双线+阵风·均风双线 SVG / 风险面板 / 作业影响建议 / 未来 48 小时逐小时图）。副标题行末尾内联坐标（同字号，小数点后两位），日期区间加粗高亮。风险等级沿用 weather-engineering-html 的 `_sev` 阈值（0绿整体适宜 / 1黄需关注 / 2橙重点关注 / 3红高度警惕）。
 - **页头背景图（hero 背景层，2026-09-28 由物探技能移植）**：把 `.topbar` → `h1` → `.unit` → `.sub` → `.tabs` **整片**包进 `<div class="heroarea">`，照片作 `::before` **背景层**（`position:absolute; z-index:-1; isolation:isolate`），**不额外占版面**。
-  - 资源 `assets/hero-bg.jpg`（1440×485 / JPEG q80 / 112KB，与物探侧**同一张**），`hero_css()` 读图 → base64 data URI，注入 `CSS` 之后（`<style>{CSS}{HERO_CSS}</style>`）。**无图时返回空串、静默降级为原样页头**（打印 `hero bg SKIPPED:`），不报错、不影响其余功能。
-  - **`.tabs` 必须让位**：原 `.tabs` 是 `position:sticky; z-index:5; background:#f4f6f8`（不透明底色会盖住背景）。`hero_css()` 里用更高特异性 `.heroarea .tabs{background:transparent;position:static;padding:0;margin:10px 0 12px;}` 覆盖，背景才能连续铺到页签底部。
-  - 可在 `render_points_html.py` 顶部调：`HERO_BLEED`（出血量，现 `16px`，与 body padding 14px 对齐做满屏宽）/ `HERO_POS_Y`（纵向取景）/ `HERO_FADE`（白色渐隐色标 `(位置, 不透明度)`，现 `("0%",".80") ("44%",".40") ("100%",".04")`）。
+  - 资源 `assets/hero-bg.jpg`（**480×161 / JPEG q82 / 约 21KB**）。**2026-09-28 起工程侧改用「钻井井场」实景图**（井架 + 黄色井场设备 + 戈壁远景），与物探侧的雪原勘探图**内容已不同**；规格一致（480×161、q82，由 1440×485 原图缩到 1/3）。`hero_css()` 读图 → base64 data URI，注入 `CSS` 之后（`<style>{CSS}{HERO_CSS}</style>`）。**无图时返回空串、静默降级为原样页头**（打印 `hero bg SKIPPED:`），不报错、不影响其余功能。
+  - **`.tabs` 必须让位**：原 `.tabs` 是 `position:sticky; z-index:5; background:#f4f6f8`（不透明底色会盖住背景）。`hero_css()` 里用更高特异性 `.heroarea .tabs{background:transparent;position:static;}` 覆盖，背景才能连续铺到页签底部。
+    ⚠️ **只覆盖 `background` 与 `position` 两项，`padding`/`margin` 必须原样保留**：早先版本连 padding 一起清掉（`padding:0;margin:10px 0 12px`），页签底边 195.4 → 183.4（上移 12px），属"引入的背景硬伤"。去掉这两行后页头 7 项布局指标与无背景图时逐像素一致。
+  - 可在 `render_points_html.py` 顶部调：`HERO_BLEED`（出血量，现 `14px`，**必须严格等于页面左右内边距**）/ `HERO_POS_Y`（纵向取景）/ `HERO_FADE`（白色渐隐色标 `(位置, 不透明度)`，现 `("0%",".80") ("44%",".40") ("100%",".04")`）。
+  - ⚠️ **`HERO_BLEED` 写错会带来横向可拖动（2026-09-28 修）**：原写成 `16px` 而实际内边距是 14px，多伸 2px → 手机端能左右拖 2px。改成 `14px` 后 360/430/768/1000px 溢出全为 0。
   - **改图后必须离线重渲染**才有新图（图是烘进 HTML 的 base64，见下方命令）。
 - **气象要素小图标（2026-09-28，与物探侧同一套语义）**：**色块＝风险等级，图形＝要素本身**，一眼同时读出「是什么要素 + 有多危险」。六种内联 SVG：雨云 `rain` / 雪花 `snow` / 风线 `wind` / 温度计 `temp` / 太阳 `heat` / 雾线 `fog`。
   - 实现：`EIC`（path 数据字典）+ `eic(kind, lvl="plain", size="")` 生成 `<span class="eic …"><svg…></span>`；配色 `lv_rain/lv_gust/lv_temp` 三个分级函数，**阈值与 `RAIN_H`、卡片判据保持一致，不许各写一套**。
@@ -226,6 +228,8 @@ $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
 - **⚠️ Python 里 `//` 是整除、不是注释（2026-09-28 踩过）**：往 `chart_js()` 的 JS 源码里补中文说明时，**绝不能写成 `'…'\n // 说明`** —— Python 会把 `//` 当整除运算符解析，报语法错误。注释必须另起一行用 `#`，或干脆不写注释。
 - **⚠️ `assets/hero-bg.jpg` 是仓库资产，必须随技能一起同步（2026-09-28 踩过）**：漏同步时 `hero_css()` 找不到图会**静默降级**（页头无背景、不报错），肉眼很难判断是图丢了还是本来没做。判定技能是否完整：`weather-engineering-data/` 下应同时有 `assets/hero-bg.jpg` 与 `scripts/*.py`。改完技能跑同步脚本后，用 `git status --short` 确认图片显示为 `create mode`。
 - **技能目录同构（2026-09-28 统一）**：两个看板技能均只有 **`SKILL.md` + `assets/` + `scripts/`** 三层，**没有独立的 `data/`**——页头背景图与运行时数据（`weather-wutan-html` 的 `cn_places.json` 地名库）都放 `assets/`，脚本统一用 `os.path.join(dirname(__file__),"..","assets","…")` 定位。工程侧不用地名库（`build_*` 全文无 `places`），故只有图片。别再往技能里新建 `data/`。
+- **总览 index 也铺同一张背景（2026-09-28 加）**：`weather-engineering-index` 的 `build_points_index.py` 生成的 `engineering/html/index.html` 把「标题行 + `.sub`」包进 `.heroarea`（`.card`/`.grp` 是白底、**不再往 hero 区里放**，否则会盖住背景），**引用的是本技能的 `assets/hero-bg.jpg`，不另存一份**（三级探测：`BEIDOU_HERO_BG` > 本技能 `assets/` > `../weather-engineering-data/assets/`；找不到静默降级为纯色页头）。所以**只需维护本技能这一张图，index 会自动跟着变**。
+  - index 的 `HERO_FADE` 比点位页**更白**（`("0%",".82") ("46%",".50") ("100%",".14")`）：钻井图下半部是深色沙地/钢构，照搬点位页那套底部只留 .04，会把「未来 2 周（14 天）…」那行压得发闷。
 - **⚠️ `chart_js()` 内联 JS 字符串的单引号转义坑（2026-09-21 踩过两次）**：`render_points_html.py` 的 `chart_js()` 用 Python 单引号拼接 JS 源码，JS 里**每一处单引号都必须写成 `\'`**（含 `'</span>'`、`'℃</b>'` 这类续接处）。漏写会让 Python 字符串提前闭合，报 `SyntaxError: '(' was never closed`（指向函数首行 `return (`，极易误判）。**改这一段不要用编辑器手写转义**：推荐用 Python 脚本按"整行定位"替换，并用 `JQ = chr(92) + "'"` 显式构造；改完立刻 `python -m py_compile` 验签。
 
 ## 通用注意事项

@@ -46,6 +46,20 @@ description: 物探项目2周天气看板「多项目总览页 index.html」生�
 | **未来 2 天风险** | `.near-term` 聚焦描述块（见下），左侧 accent 边线；**先说近 2 天风险，周中后期远预报情况置后** |
 | 项目卡片网格 | 按 **48 小时风险评级（sevNear）** 降序（红→橙→黄→绿），每卡 = 项目名 + sev 徽章 + 重点提示 + 类型/日期/采样点，`<a href="{pin}.html">` 进入看板 |
 | 图例 | 四级风险色说明 |
+| 页头背景图 | 标题行 + 副标题 + 等级统计行背后铺一张**雪原勘探照片**（base64 内嵌，白色渐隐），**不占版面**（见下） |
+
+### 页头背景图（hero 背景层，2026-09-28 加）
+
+「标题行 + `.sub` + `.summary`」三行被包进 `.heroarea`，照片挂在 `.heroarea::before`（`position:absolute; z-index:-1; isolation:isolate`）上，用**负 inset 向左右出血**到屏幕两边。`.heroarea` 高度 = 三行内容高度（桌面 95px、430px 手机 135px），**背景层不参与布局**，加了图页面位置一点不变。
+
+- **图不在本技能里、也不另存一份**：`gen_subindex.py` 的 `hero_css()` 三级探测引用 ——
+  `BEIDOU_HERO_BG`（环境变量，换图应急）> 本技能 `assets/hero-bg.jpg` > 兄弟技能 `../weather-wutan-html/assets/hero-bg.jpg`。
+  **日常走第三条**：图归 `weather-wutan-html` 维护，本技能自动跟随，**绝不会出现两张图各自更新后不一致**。三级全找不到 → 打印一行提示并**静默降级为纯色页头**，不报错、不中断生成。
+- **规格**：480×161 / JPEG q82 / 约 18 KB（与看板页同一张、同一规格）。base64 内嵌后 index 由约 10 KB 增至约 35 KB。
+- **`HERO_BLEED = "16px"`** = 页面左右内边距。**必须与实测内边距严格相等**：多 2px 就会让 `scrollWidth > clientWidth`，手机端能左右拖动（看板页曾因写成 16px 而实际 14px 踩过，见 `weather-wutan-html` 的 SKILL.md）。
+- **`HERO_FADE`**（自上而下白纱）：`.78/0% → .38/46% → .03/100%`。物探图是雪原、本身亮，底部可以直接透到 .03。
+- **哪些块不能进 hero 区**：`.near-term`（未来 2 天风险，淡绿底）与 `a.card`（白底卡片）**留在外面**——有底色的块进去会盖住照片。想改 hero 范围时照此判断。
+- **改完必须离线重生 index** 才生效：`<PY> <SKILLS>/weather-wutan-index/scripts/gen_subindex.py --only wutan`。
 
 ### 未来 2 天（48 小时）风险描述
 

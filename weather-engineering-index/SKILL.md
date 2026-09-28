@@ -88,6 +88,19 @@ engineering/data/<pinyin>.json          ← meta.kind=="point"
 4. 主体：按「一级 + 二级」分组的可折叠卡片，组内「三级 + 点位」按风险等级降序，
    点击条目跳转到该点位的独立看板 html
 
+**页头背景图（hero 背景层，2026-09-28 加）**
+
+「标题行 + 第 1 条的窗口说明」两行被包进 `.heroarea`，照片挂在 `.heroarea::before`（`position:absolute; z-index:-1; isolation:isolate`）上，用**负 inset 向左右出血**；**背景层不参与布局**（`.heroarea` 高度 = 两行内容高度：桌面 59px、430px 手机 100px）。
+
+- **图不在本技能里、也不另存一份**：`hero_css()` 三级探测引用 ——
+  `BEIDOU_HERO_BG`（环境变量）> 本技能 `assets/hero-bg.jpg` > 兄弟技能 `../weather-engineering-data/assets/hero-bg.jpg`。
+  **日常走第三条**：图归 `weather-engineering-data` 维护，本技能自动跟随，**不会出现两张图各自更新后不一致**。三级全找不到 → 打印一行提示并**静默降级为纯色页头**，不报错、不中断生成。
+- **工程侧用的是「钻井井场」实景图**（井架 + 黄色井场设备 + 戈壁远景），**与物探侧的雪原勘探图内容不同**。规格同为 480×161 / JPEG q82（工程图细节多，约 21 KB）。
+- **`HERO_FADE` 比点位页更白**：`("0%",".82") ("46%",".50") ("100%",".14")`。钻井图下半部是深色沙地/钢构，照搬点位页那套（底部只留 .04）会把「未来 2 周（14 天）…」那行压得发闷；`.sub` 另加了白色光晕 `text-shadow` 兜底。
+- **哪些块不能进 hero 区**：第 2 项的等级分布 `.card`、第 3 项的未来 2 天风险卡、第 4 项的 `.grp` 分组卡**全是白底，必须留在外面**——有底色的块进去会盖住照片。想改 hero 范围时照此判断。
+- **`HERO_BLEED = "14px"`** = 页面左右内边距（`body` 的 padding）。**必须与实测值严格相等**：多 2px 就会让 `scrollWidth > clientWidth`，手机端能左右拖动（点位页曾因写成 16px 而实际 14px 踩过）。
+- 改完必须重跑 `build_points_index.py` 才生效（图是烘进 HTML 的 base64）。
+
 **只重建 index（不取数、不重渲染点位页）**——这是拆分的主要收益：
 
 ```bash

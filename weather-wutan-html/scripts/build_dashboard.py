@@ -52,7 +52,9 @@ def http_get_json(url, timeout=60, retries=5, sleep0=2.0):
 # 实现要点：背景铺在 `.heroarea`（包住 <header> 与三个页签）的 ::before 伪元素上，
 # 用负 inset 向四周外扩做「全出血」，因此**不占任何额外版面**，内容位置与无图时完全一致。
 _HERO_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "hero-bg.jpg")
-HERO_BLEED = "16px"          # 背景左右/上下的外扩量（与 body padding 14px 对齐，做满屏出血）
+HERO_BLEED = "14px"          # 背景左右外扩量 = wrap 左右内边距（实测 14px，做满屏出血）。
+                             # ⚠️ 必须与实测 padding 严格相等：写成 16px 会多伸 2px →
+                             # documentElement.scrollWidth 比 clientWidth 大 2 → 手机端可左右拖动（2026-09-28 修）
 HERO_POS_Y = "center"        # 照片纵向取景（资源已预裁成「雪山+作业面」信息带，居中即可）
 HERO_FADE = (                # 自上而下的白色渐隐，保证文字可读：(CSS 位置, 白色不透明度)
     ("0%", ".78"), ("42%", ".38"), ("100%", ".02"),

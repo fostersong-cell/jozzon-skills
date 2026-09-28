@@ -227,21 +227,25 @@ FETCH_ENABLED = True    # True=启用实时取数；False=暂时关闭（离线 
 从页面顶部到**三个页签下沿**这一整片区域，铺一张**照片背景**（雪山/作业场景）。做法是「base64 内嵌 + 白色渐隐遮罩」，产物仍是**单文件 HTML**（可直接传 S3 / 离线打开，不依赖外链图片）。
 
 - **不是卡片、不占版面**：`<header>` 与 `.tabs` 被包进一个 `.heroarea` 容器，照片挂在 `.heroarea::before`（`position:absolute; z-index:-1`）上，用**负 inset 向外出血**到屏幕两边。因此 `header` 高度、`.tabs` 位置与没有背景图时**逐像素一致**（实测 header 88px、页签底 156px），只是背后多了一张图。
-- **图片资源**：`assets/hero-bg.jpg`。当前为雪原勘探场景（1440×485、约 112 KB）。原图整体亮度 210–252、近乎全白，**必须先做调色**（裁到「雪山+作业面」信息带 + 提对比 1.45 / 提饱和 1.35 / 压亮度 0.84 + `autocontrast`），否则当背景看就是一片白。
+- **图片资源**：`assets/hero-bg.jpg`。当前为雪原勘探场景，**480×161、约 18 KB**（2026-09-28 由 1440×485/112 KB 缩到 1/3，见下「分辨率与体积」）。
+- **分辨率与体积（2026-09-28 定）**：图的**制作尺寸是 1440×485**（构图标准），但**落盘尺寸取 1/3 = 480×161、JPEG quality 82**（约 18 KB）。因为它是 `cover` 铺底 + 白色渐隐到 .02~.78 的**背景层**，放大 3 倍显示的观感与全尺寸几乎无差，而 base64 内嵌的代价从 **153 KB 降到 24 KB**（单页 HTML 因此少约 129 KB）。换图时按「先做 1440×485 → `resize(w//3,h//3,LANCZOS)` → q82」两步走。
+- **调色（制作原图时做，已固化在现图上）**：原图整体亮度 210–252、近乎全白，**必须先调色**（裁到「雪山+作业面」信息带 + 提对比 1.45 / 提饱和 1.35 / 压亮度 0.84 + `autocontrast`），否则当背景看就是一片白。
 - **内嵌方式**：`build_dashboard.py` 的 `hero_css()` 读该文件 → base64 data URI → 替换样式块里的注释占位 `/*__HERO_CSS__*/`。生成时打印 `hero bg: embedded`；文件缺失则打印 `hero bg SKIPPED: ...` 并**静默降级为原样页头**（不报错、不影响其他功能）。
 - **可调参数**（都在 `build_dashboard.py` 顶部附近）：
   | 常量 | 作用 | 当前值 |
   |---|---|---|
   | `_HERO_IMG` | 图片路径（相对脚本 `../assets/hero-bg.jpg`） | — |
-  | `HERO_BLEED` | 背景向左右/上下的**出血量**（与 `body` padding 对齐，做到满屏宽） | `"16px"` |
+  | `HERO_BLEED` | 背景向左右的**出血量**（须 **严格等于**页面 `wrap` 的左右内边距，做到满屏宽） | `"14px"` |
   | `HERO_POS_Y` | 照片纵向取景（百分比越大越往下取景） | `"center"` |
   | `HERO_FADE` | 自上而下的白色渐隐色标：顶部较白保证导航/标题清晰，底部几乎全透露出照片 | `.78/0% → .38/42% → .02/100%` |
 - **文字可读性兜底**：`hero_css()` 顺带把 `header>.meta` 字色压深到 `#4B545C`、给 `h1`/`.meta` 加极淡白描边（`text-shadow`）——照片变清楚后，12px 小字容易发飘。
-- **换图**：把新图覆盖 `assets/hero-bg.jpg` 即可；建议宽度 1440、JPEG quality 80（base64 后约 100~120 KB，单页 HTML 增量可接受）。若原图偏亮，先按上面那套调色再落盘。
+- **⚠️ `HERO_BLEED` 必须与实测内边距严格相等（2026-09-28 修）**：原先写成 `"16px"`，而页面左右内边距实测是 **14px** —— 多伸的 2px 让 `documentElement.scrollWidth` 比 `clientWidth` 大 2，**手机端能左右拖动 2px**。改 `"14px"` 后 360/430/768/1000px 四种宽度实测溢出全为 0。改布局内边距时记得同步改这个值。
+- **换图**：把新图覆盖 `assets/hero-bg.jpg` 即可；建议先做 1440×485 的原图（含调色），再缩到 1/3（480×161）、JPEG q82 ≈ 18 KB。同时**必须同步替换 `weather-engineering-data/assets/hero-bg.jpg`**（见下条）——两张图现在内容不同，别再当成同一张。
 - **改完必须离线重渲染才生效**（模板改动不会被已有 HTML 自动套用）：
   `<PY> <SKILLS>/scripts/build_dashboard.py --name "<中文名>" --data <BEIDOU>/wutan/data/<pin>_data.json --outdir <BEIDOU>/wutan/html --outfile <pin>.html`
 - **验证要点**：① 文字可读性（导航按钮、标题、元信息行）；② **版面零位移** —— 渲染后量 `header` 高度与 `.tabs` 底边，应与无背景图时完全一致；③ 地图/图表功能无回归（切 Tab、点采样点出图、48h 图 1 张 / 2 周图 3 张、零 JS 报错）。截图验证用托管 venv 的 playwright（`chromium` 已装），430px 视口即可。
-- **石油工程侧已于 2026-09-28 同步此特性**（`weather-engineering-data` 的 `render_points_html.py`，含 hero 背景 + 气象要素小图标，语义与参数同本技能）。两侧各存一份 `assets/hero-bg.jpg`，**换图时两个技能都要覆盖**，否则两边页头不一致。
+- **石油工程侧已于 2026-09-28 同步此特性**（`weather-engineering-data` 的 `render_points_html.py`，含 hero 背景 + 气象要素小图标，语义与参数同本技能）。**注意两张图内容已不同**：物探＝雪原勘探场景，石油工程＝**钻井井场实景**（井架 + 井场设备 + 戈壁远景）。两边各存一份 `assets/hero-bg.jpg`，规格相同（480×161、q82）。
+- **总览 index 也铺同一张背景（2026-09-28 加）**：`weather-wutan-index` 的 `gen_subindex.py` 生成的 `wutan/html/index.html` 把「标题行 + `.sub` + `.summary`」包进 `.heroarea`，**引用的是本技能的 `assets/hero-bg.jpg`，不另存一份**（脚本三级探测：`BEIDOU_HERO_BG` 环境变量 > 本技能 `assets/` > `../weather-wutan-html/assets/`；找不到就静默降级为纯色页头）。所以**只需维护本技能这一张图，index 会自动跟着变**。
 - **⚠️ `assets/hero-bg.jpg` 必须随仓库一起同步**：它曾被漏同步到 git（2026-09-28 修），表现是新机安装后页头**静默无背景**、不报错、极难察觉。跑完同步脚本后用 `git status --short` 确认图片显示为 `create mode`。
 
 ## 气象要素小图标（2026-09-28 新增）

@@ -16,7 +16,7 @@ build_points_index.py —— 石油工程「未来 2 周」点位看板 index.ht
 
 风险等级沿用 _sev 阈值（0 绿 整体适宜 / 1 黄 需关注 / 2 橙 重点关注 / 3 红 高度警惕）。
 """
-import os, sys, json, glob, argparse
+import os, sys, json, glob, argparse, base64
 
 # ---------- 复用 gen_points_summary 的「未来 2 天风险」短描述（同目录） ----------
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +35,57 @@ except Exception:
             else:
                 break
         return "".join(run) or name
+
+
+# ---------- 页头背景图 ----------
+# 工程侧用「钻井井场」实景图（物探侧用高原勘探图），各存于自己看板技能的 assets/ 下。
+# 本技能只引用、不另存一份：探测顺序 = 环境变量 BEIDOU_HERO_BG > 本技能 assets/
+# > 兄弟技能 weather-engineering-data/assets/。全找不到时静默降级（不注入 CSS，
+# 页头回到纯色底），不报错、不中断生成。
+_HERO_CANDIDATES = (
+    os.environ.get("BEIDOU_HERO_BG") or "",
+    os.path.join(_HERE, "..", "assets", "hero-bg.jpg"),
+    os.path.join(_HERE, "..", "..", "weather-engineering-data", "assets", "hero-bg.jpg"),
+)
+HERO_BLEED = "14px"          # 与 body 左右 padding 一致 → 背景正好贴到内容区边缘
+# 白纱强度按图分别调：工程用的是钻井井场实景，下半部是深色沙地/钢构，
+# 若照搬物探那套（底部只剩 .04）会把「未来 2 周…」那行压得发闷，故底部保留 .14。
+HERO_FADE = (("0%", ".82"), ("46%", ".50"), ("100%", ".14"),)
+
+
+def _find_hero():
+    for p in _HERO_CANDIDATES:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
+def hero_css(bleed=HERO_BLEED):
+    """生成页头背景 CSS；无图时返回空串（静默降级，页面照常生成）。"""
+    img = _find_hero()
+    if not img:
+        print("  · hero bg: 未找到 hero-bg.jpg → 页头用纯色底")
+        return ""
+    try:
+        with open(img, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode()
+    except Exception as e:
+        print("  · hero bg SKIPPED:", repr(e))
+        return ""
+    uri = "data:image/jpeg;base64," + b64
+    stops = ",".join(f"rgba(255,255,255,{a}) {p}" for p, a in HERO_FADE)
+    return (
+        ".heroarea {position:relative; isolation:isolate;}\n"
+        ".heroarea::before {content:\"\"; position:absolute; z-index:-1;"
+        f"top:-8px; bottom:-10px; left:-{bleed}; right:-{bleed};"
+        "border-radius:0 0 12px 12px; background-color:#EEF0F2;"
+        f'background-image:linear-gradient(180deg,{stops}),url("{uri}");'
+        "background-size:100% 100%,cover; background-position:center top,center center;"
+        "background-repeat:no-repeat,no-repeat;}\n"
+        ".heroarea h1, .heroarea .sub {position:relative; z-index:1; text-shadow:0 1px 0 rgba(255,255,255,.85);}\n"
+        ".heroarea .sub {color:#42505A; text-shadow:0 0 7px rgba(255,255,255,.95), 0 1px 0 rgba(255,255,255,.9);}\n"
+        ".heroarea .extlink {box-shadow:0 2px 8px rgba(46,125,168,.34);}\n"
+    )
 
 
 SEV_LABEL = {0: "整体适宜", 1: "需关注", 2: "重点关注", 3: "高度警惕"}
@@ -128,7 +179,8 @@ def render_index(groups, counts, start_label, end_label=None, short2=None, ndays
 .item .badge {margin-left:auto; font-size:11px; font-weight:700; color:#fff; padding:3px 10px; border-radius:9px;}
 .extlink {display:inline-flex; align-items:center; gap:4px; font-size:13px; font-weight:700; color:#fff; background:#2E7DA8; padding:7px 14px; border-radius:20px; text-decoration:none; box-shadow:0 2px 6px rgba(46,125,168,.3);}
 .extlink:hover {background:#245f82; transform:translateY(-1px);}
-</style></head><body>""")
+""" + hero_css() + """</style></head><body>""")
+    parts.append('<div class="heroarea">')
     parts.append('<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">'
                  '<h1 style="margin:0">中石化北斗运营中心 · 石油工程天气看板</h1>'
                  '<a class="extlink" href="https://leidian.wang" target="_blank" rel="noopener">北斗天气风险治理平台 ↗</a>'
@@ -143,6 +195,7 @@ def render_index(groups, counts, start_label, end_label=None, short2=None, ndays
         span = f"未来 2 周（{dates}）"
     span += " · 组内按风险等级降序"
     parts.append(f'<div class="sub">{span}</div>')
+    parts.append('</div>')          # 结束 .heroarea（页头背景区：标题 + 窗口说明）
     summ = " · ".join(f'<span style="color:{SEV_COLOR[i]}">●</span> {SEV_LABEL[i]} {counts[i]}'
                       for i in (3, 2, 1, 0))
     parts.append(f'<div class="card" style="font-size:13px">{summ}</div>')

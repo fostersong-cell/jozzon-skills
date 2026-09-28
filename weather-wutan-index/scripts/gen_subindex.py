@@ -9,7 +9,7 @@
 超出该窗口的远预报仅以「临近时再提示」一句话点出，不作主风险。
 """
 
-import json, os, glob, argparse
+import json, os, glob, argparse, base64
 
 # 项目根目录（其下含 beidou/{wutan,engineering}/{data,html}）。
 # 三级回退，顺序：环境变量 BEIDOU_WORK > --base > 从脚本位置自动上溯。
@@ -30,6 +30,54 @@ BASE = DEFAULT_BASE
 BEIDOU = os.path.join(BASE, "beidou")
 DATA_WT = os.path.join(BEIDOU, "wutan", "data")
 DATA_ZJ = os.path.join(BEIDOU, "engineering", "data")
+
+# ---------- 页头背景图 ----------
+# 图存在「看板技能」里（weather-wutan-html/assets/hero-bg.jpg），本技能只负责引用，
+# 不另存一份（避免两张图各自更新后不一致）。三级探测，顺序：
+#   环境变量 BEIDOU_HERO_BG > 本技能 assets/ > 兄弟技能 weather-wutan-html/assets/
+# 全找不到时静默降级（不注入 CSS，页头回到纯色底），不报错、不中断生成。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_HERO_CANDIDATES = (
+    os.environ.get("BEIDOU_HERO_BG") or "",
+    os.path.join(_HERE, "..", "assets", "hero-bg.jpg"),
+    os.path.join(_HERE, "..", "..", "weather-wutan-html", "assets", "hero-bg.jpg"),
+)
+HERO_BLEED = "16px"          # 与 body 左右 padding 一致 → 背景正好贴到视口边
+HERO_FADE = (("0%", ".78"), ("46%", ".38"), ("100%", ".03"),)
+
+def _find_hero():
+    for p in _HERO_CANDIDATES:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+def hero_css(bleed=HERO_BLEED):
+    """生成页头背景 CSS；无图时返回空串（静默降级，页面照常生成）。"""
+    img = _find_hero()
+    if not img:
+        print("  · hero bg: 未找到 hero-bg.jpg → 页头用纯色底")
+        return ""
+    try:
+        with open(img, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode()
+    except Exception as e:
+        print("  · hero bg SKIPPED:", repr(e))
+        return ""
+    uri = "data:image/jpeg;base64," + b64
+    stops = ",".join(f"rgba(255,255,255,{a}) {p}" for p, a in HERO_FADE)
+    return (
+        "  .heroarea{position:relative;isolation:isolate;}\n"
+        "  .heroarea::before{content:\"\";position:absolute;z-index:-1;"
+        f"top:-10px;bottom:-10px;left:-{bleed};right:-{bleed};"
+        "border-radius:0 0 12px 12px;background-color:#EEF0F2;"
+        f'background-image:linear-gradient(180deg,{stops}),url("{uri}");'
+        "background-size:100% 100%,cover;background-position:center top,center center;"
+        "background-repeat:no-repeat,no-repeat;}\n"
+        "  .heroarea h1,.heroarea .sub,.heroarea .summary{position:relative;z-index:1;"
+        "text-shadow:0 1px 0 rgba(255,255,255,.85);}\n"
+        "  .heroarea .sub{color:#42505A;text-shadow:0 0 7px rgba(255,255,255,.95),0 1px 0 rgba(255,255,255,.9);}\n"
+        "  .heroarea .extlink{box-shadow:0 2px 8px rgba(31,122,107,.34);}\n"
+    )
 
 SEV_COLOR = {3: "#C0392B", 2: "#E0822C", 1: "#E0A92C", 0: "#2E8B57"}
 SEV_LABEL = {3: "高度警惕", 2: "重点关注", 1: "需关注", 0: "整体适宜"}
@@ -273,6 +321,7 @@ def card(r):
         </a>'''
 
 def page(title, sub_title, label, rows, out_path):
+    hero = hero_css()          # 页头背景图 CSS；无图时为空串（静默降级）
     # 空数据保护：换机器时某一类（如只有物探、没有石油工程）可能一个 *_data.json 都没有，
     # 此时不能崩，输出一张「暂无数据」空页即可（rows 为空会让 min()/max() 抛 ValueError）。
     if not rows:
@@ -285,8 +334,8 @@ def page(title, sub_title, label, rows, out_path):
   body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 "PingFang SC","Microsoft YaHei",system-ui,sans-serif;}}
   .wrap{{max-width:1080px;margin:0 auto;padding:24px 16px;}}
   .empty{{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:28px;text-align:center;color:var(--sub);}}
-</style></head>
-<body><div class="wrap"><h1>{title}</h1>
+{hero}</style></head>
+<body><div class="wrap"><div class="heroarea"><h1>{title}</h1></div>
 <div class="empty">暂无数据：未在 <code>{out_path}</code> 对应的 data 目录中找到 *_data.json。<br>
 请先跑数据脚本生成看板数据。</div>
 </div></body></html>'''
@@ -348,13 +397,15 @@ def page(title, sub_title, label, rows, out_path):
   .legend i{{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px;}}
   .extlink{{display:inline-flex;align-items:center;gap:4px;font-size:13px;font-weight:700;color:#fff;background:var(--accent);padding:7px 14px;border-radius:20px;text-decoration:none;box-shadow:0 2px 6px rgba(31,122,107,.3);}}
   .extlink:hover{{background:#176254;transform:translateY(-1px);}}
-</style>
+{hero}</style>
 </head>
 <body>
 <div class="wrap">
+  <div class="heroarea">
   <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px"><h1 style="margin:0">{title}</h1><a class="extlink" href="https://leidian.wang" target="_blank" rel="noopener">北斗天气风险治理平台 ↗</a></div>
   <div class="sub">{span}（{start} ~ {end}）· 点击卡片进入对应项目看板</div>
   <div class="summary">{summ}</div>
+  </div>
   {near_html}
   <div class="grid">
 {cards}
