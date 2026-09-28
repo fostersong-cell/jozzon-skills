@@ -69,9 +69,10 @@ description: 物探项目2周天气看板「多项目总览页 index.html」生�
 ```
 
 - `--only wutan`：只重建物探总览 `beidou/wutan/html/index.html`（**日常最常用**）。
-- `--only engineering`：只重建石油工程总览 `beidou/engineering/html/index.html`。
-- 省略 `--only`：两者都重建。
+- `--only engineering`：只重建石油工程总览 `beidou/engineering/html/index.html`。**默认不推荐**——石油工程总览平时由 `weather-engineering-index` 的 `build_points_index.py` 生成（带 7 个一级分组和未来 2 天风险短描述），本脚本生成的是**简化版**（无分组、无风险短描述），跑一次会把它覆盖掉。只在确实需要重排时才用。
+- 省略 `--only`：两者都重建（同上，会覆盖已由 `build_points_index.py` 生成的工程总览）。
 - `--base <工作区根>`：指定工作区根目录（其下需含 `beidou/{wutan,engineering}/data`）。**默认自动解析**（环境变量 `BEIDOU_WORK` > 从脚本位置逐级上溯找含 `beidou/wutan/data` 的目录），一般无需传；换工作区时才用。
+- **两类数据文件名约定不同，勿混用**：物探是 `<pin>_data.json`（脚本默认 glob），石油工程是 `<slug>.json` 且 `meta.kind=="point"`（须传 `pattern="*.json"`）。写错会读不到数据并**误判成「空数据」而生成空页覆盖已有总览**。
 
 ## 工作流（agent 执行步骤）
 

@@ -12,8 +12,20 @@
 import json, os, glob, argparse
 
 # 项目根目录（其下含 beidou/{wutan,engineering}/{data,html}）。
-# 可用 --base 覆盖，使本脚本可复用于其它工作区，而非硬编码单一项目路径。
-DEFAULT_BASE = "<WORK>"
+# 三级回退，顺序：环境变量 BEIDOU_WORK > --base > 从脚本位置自动上溯。
+# （绝不使用形如 "<WORK>" 的字面量占位符——那会让默认路径永远指向不存在的目录。）
+def _detect_base():
+    here = os.path.dirname(os.path.abspath(__file__))
+    d = here
+    while True:
+        if os.path.isdir(os.path.join(d, "beidou")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return here  # 上溯失败：退回脚本所在目录，由调用方显式 --base
+        d = parent
+
+DEFAULT_BASE = os.environ.get("BEIDOU_WORK") or _detect_base()
 BASE = DEFAULT_BASE
 BEIDOU = os.path.join(BASE, "beidou")
 DATA_WT = os.path.join(BEIDOU, "wutan", "data")
@@ -138,7 +150,7 @@ def build_near_term_desc(rows, wd=NEAR_DAYS):
         body = body + " " + far_txt
     return f'<span class="nt-h">未来 {wd} 天风险（{start} ~ {end}）</span>{body}'
 
-def build_focus(d):
+def build_focus(d, is_eng=False):
     # 焦点描述按「未来 48 小时（近 2 天）」口径，与前端 t1「重点提示」及风险评级保持一致；
     # 旧数据缺 peaksNear 时回退到全周期 peaks，避免中断。
     p = d.get("peaksNear") or d.get("peaks", {}) or {}
@@ -157,28 +169,87 @@ def build_focus(d):
         items.append(f"最大阵风 {round(p['gustMax'],1)} m/s（≥8级）")
     if p.get("windMax") is not None and p["windMax"] >= 10.8:
         items.append(f"最大持续风 {round(p['windMax'],1)} m/s（≥6级）")
+    if is_eng and not items:
+        # 工程数据没有 peaksNear/peaks 聚合，从 daily 前 2 天现算，保证卡片焦点不为空
+        d2 = (d.get("daily") or [])[:2]
+        if d2:
+            cum = sum(x.get("precip", 0) for x in d2)
+            gust = max((x.get("gustMax", 0) for x in d2), default=0)
+            tmin = min((x.get("tempMin", 99) for x in d2), default=99)
+            tmax = max((x.get("tempMax", -99) for x in d2), default=-99)
+            e = []
+            if cum >= 1:
+                e.append(f"累计降水 {round(cum,1)}mm")
+            if gust >= 10.8:
+                e.append(f"最大阵风 {round(gust,1)}m/s")
+            if tmin <= 0:
+                e.append(f"最低 {round(tmin,1)}℃")
+            if tmax >= 35:
+                e.append(f"最高 {round(tmax,1)}℃")
+            items = e or ["未来 2 天无明显强降雨与大风，整体适宜作业"]
     if not items:
         return "本期未触发极端天气预警阈值，整体适宜作业"
     return "；".join(items[:3])
 
-def load_rows(dd, group, badge):
+def sev_eng_recent(daily2):
+    """石油工程数据的风险等级（近 2 天口径）。
+
+    工程 *_data.json 的 meta 里没有 sevNear/sev（物探才有），必须在汇总时现算。
+    阈值与 weather-engineering-index 的 sev_of_recent 保持一致，避免两条线的
+    卡片评级出现分歧：只取 daily 前 2 天聚合。
+    """
+    if not daily2:
+        return 0
+    pmax = max((d.get("precip", 0) for d in daily2), default=0)
+    gust = max((d.get("gustMax", 0) for d in daily2), default=0)
+    wind = max((d.get("windMax", 0) for d in daily2), default=0)
+    tmax = max((d.get("tempMax", -99) for d in daily2), default=-99)
+    tmin = min((d.get("tempMin", 99) for d in daily2), default=99)
+    cum = sum(d.get("precip", 0) for d in daily2)
+    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150:
+        return 3
+    if pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80:
+        return 2
+    if pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20:
+        return 1
+    return 0
+
+
+def load_rows(dd, group, badge, pattern="*_data.json"):
+    """扫描一个 data 目录并汇总成卡片行。
+
+    两类数据的文件名约定不同，必须分别传 pattern，否则会读不到并误判为「空数据」：
+      · 物探   beidou/wutan/data/*_data.json       （ pattern="*_data.json" 默认）
+      · 石油工程 beidou/engineering/data/*.json     （ pattern="*.json" ）
+    工程侧同时跳过 kind != point 的井位看板数据。
+    """
     rows = []
-    for f in sorted(glob.glob(os.path.join(dd, "*_data.json"))):
+    for f in sorted(glob.glob(os.path.join(dd, pattern))):
         d = json.load(open(f, encoding="utf-8"))
         m = d["meta"]
-        pin = os.path.basename(f).replace("_data.json", "")
+        if pattern == "*.json" and m.get("kind") != "point":
+            continue
+        pin = os.path.splitext(os.path.basename(f))[0]
+        if pin.endswith("_data"):
+            pin = pin[: -len("_data")]
         is_line = bool(d.get("isLine"))
         short = short_pin(pin)
         # 风险评级（高度警惕/重点关注/需关注/整体适宜）按「未来 48 小时（近 2 天）」口径，
         # 与看板 t1「重点提示」横幅保持一致；旧数据缺 sevNear 时回退到全周期 sev，避免中断。
         sev = m.get("sevNear", m.get("sev"))
+        if sev is None:
+            sev = sev_eng_recent((d.get("daily") or [])[:2]) if pattern == "*.json" else 0
+        sev = sev or 0
         rows.append({
             "pin": pin, "short": short, "name": m["name"], "sev": sev,
             "color": SEV_COLOR[sev], "label": SEV_LABEL[sev],
-            "focus": build_focus(d),
-            "kind": "测线" if is_line else "工区",
-            "start": mmdd(m["start"]), "end": mmdd(m["end"]),
-            "npts": m["npts"], "group": group, "badge": badge,
+            "focus": build_focus(d, is_eng=(pattern == "*.json")),
+            "kind": "测线" if is_line else ("工区" if pattern == "*_data.json" else "点位"),
+            # 工程数据的 meta 用 start_date/end_date，物探用 start/end；npts 工程也没有
+            "start": mmdd(m.get("start") or m.get("start_date", "")),
+            "end": mmdd(m.get("end") or m.get("end_date", "")),
+            "npts": m.get("npts", len(d.get("points") or [])),
+            "group": group, "badge": badge,
             "ndays": len(d.get("daily") or []),
             "near": project_near(d, NEAR_DAYS) if (d.get("daily") and d.get("points")) else None,
         })
@@ -311,13 +382,16 @@ if __name__ == "__main__":
                     help="只重建指定分类的子总览（默认两者都重建）")
     args = ap.parse_args()
 
+    # 注意：这里必须用新的局部名，不能重新赋值全局 DATA_WT/DATA_ZJ——
+    # 模块级下的「重新赋值」不会作用于 load_rows 读取的默认值；
+    # 同理也不要在此处写 global 声明（模块级 global 会导致语法错误）。
     BASE = args.base
     BEIDOU = os.path.join(BASE, "beidou")
-    DATA_WT = os.path.join(BEIDOU, "wutan", "data")
-    DATA_ZJ = os.path.join(BEIDOU, "engineering", "data")
+    print(f"  base = {BASE}")
 
-    wt = load_rows(DATA_WT, "物探", "物探")
-    zj = load_rows(DATA_ZJ, "石油工程", "石油工程")
+    wt = load_rows(os.path.join(BEIDOU, "wutan", "data"), "物探", "物探")
+    zj = load_rows(os.path.join(BEIDOU, "engineering", "data"), "石油工程", "石油工程",
+                   pattern="*.json")
 
     if args.only in (None, "wutan"):
         page(
