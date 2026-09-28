@@ -68,7 +68,7 @@ for skill in "$REPO_DIR"/*/; do
   if [ -e "$dst" ]; then
     # 先清掉上一次的旧备份，避免多次重装后堆积
     for old in "$dst".bak-*; do
-      [ -e "$old" ] && rm -rf "$old"
+      if [ -e "$old" ]; then rm -rf "$old"; fi
     done
     stamp="$(date +%Y%m%d-%H%M%S)"
     if [ "$DRY_RUN" = "0" ]; then
