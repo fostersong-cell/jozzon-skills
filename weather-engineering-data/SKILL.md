@@ -146,6 +146,16 @@ $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
 
 产出：
 - `engineering/html/{拼音}.html` —— **每个点位一张独立无地图看板**（重点关注横幅·按风险变色 / 关键指标四宫格 / 逐日降水柱+气温双线+阵风·均风双线 SVG / 风险面板 / 作业影响建议 / 未来 48 小时逐小时图）。副标题行末尾内联坐标（同字号，小数点后两位），日期区间加粗高亮。风险等级沿用 weather-engineering-html 的 `_sev` 阈值（0绿整体适宜 / 1黄需关注 / 2橙重点关注 / 3红高度警惕）。
+- **页头背景图（hero 背景层，2026-09-28 由物探技能移植）**：把 `.topbar` → `h1` → `.unit` → `.sub` → `.tabs` **整片**包进 `<div class="heroarea">`，照片作 `::before` **背景层**（`position:absolute; z-index:-1; isolation:isolate`），**不额外占版面**。
+  - 资源 `assets/hero-bg.jpg`（1440×485 / JPEG q80 / 112KB，与物探侧**同一张**），`hero_css()` 读图 → base64 data URI，注入 `CSS` 之后（`<style>{CSS}{HERO_CSS}</style>`）。**无图时返回空串、静默降级为原样页头**（打印 `hero bg SKIPPED:`），不报错、不影响其余功能。
+  - **`.tabs` 必须让位**：原 `.tabs` 是 `position:sticky; z-index:5; background:#f4f6f8`（不透明底色会盖住背景）。`hero_css()` 里用更高特异性 `.heroarea .tabs{background:transparent;position:static;padding:0;margin:10px 0 12px;}` 覆盖，背景才能连续铺到页签底部。
+  - 可在 `render_points_html.py` 顶部调：`HERO_BLEED`（出血量，现 `16px`，与 body padding 14px 对齐做满屏宽）/ `HERO_POS_Y`（纵向取景）/ `HERO_FADE`（白色渐隐色标 `(位置, 不透明度)`，现 `("0%",".80") ("44%",".40") ("100%",".04")`）。
+  - **改图后必须离线重渲染**才有新图（图是烘进 HTML 的 base64，见下方命令）。
+- **气象要素小图标（2026-09-28，与物探侧同一套语义）**：**色块＝风险等级，图形＝要素本身**，一眼同时读出「是什么要素 + 有多危险」。六种内联 SVG：雨云 `rain` / 雪花 `snow` / 风线 `wind` / 温度计 `temp` / 太阳 `heat` / 雾线 `fog`。
+  - 实现：`EIC`（path 数据字典）+ `eic(kind, lvl="plain", size="")` 生成 `<span class="eic …"><svg…></span>`；`size` 三档 `""`(19px，卡标题/影响建议) / `"s"`(16px) / `"xs"`(13px，KPI 四宫格)。配色 `lv_rain/lv_gust/lv_temp` 三个分级函数，**阈值与 `RAIN_H`、卡片判据保持一致，不许各写一套**。
+  - **两套底色语义勿混**：`.ok/.warn/.danger`＝风险等级（用在 **KPI 四宫格**、**风险面板卡标题**、**作业影响建议每条**、**48h 读数行**）；`.plain` 灰＝只标要素不带风险（用在**图表图例**）。
+  - **挂载点 5 处**：① `.kpi .v` **数值行内**（⚠️ **不要挂到 `.l` 标签行**——430px 下每格仅 79px 可用，图标会把「48h降水 mm」挤成两行，实测高度 17px→35px 属回归）；② `risk_cards()` 渲染的 `.rc .rt`，要素由 `card_icon(title)` 按标题关键词映射、等级取卡自身的 `c[0]`；③ `impact_bullets()` 每条前缀，等级按**本条自身判据**独立计算（不跟随卡片口径）；④ 三处 `.legend`（降水类型图例经 `ptype_legend_html()` + 逐日气温图 + 逐日阵风/均风图），一律 `.plain`；⑤ `#hval` 48h 读数行 —— 此处在 `chart_js()` 的 **JS 里**，需另写一份 `EIC_PATH`/`eic()`/`lvR()`/`lvG()`，**随选时实时变色**。
+  - ⚠️ **JS 侧写图标的坑**：`chart_js()` 用 Python 单引号拼 JS 字符串，插入的 SVG path **内部只能用双引号**（`d="M20 16.6…"`），否则与 Python 引号冲突；另外 Python 里 `//` 是整除运算符**不是注释**，别往里写 `// 中文说明`（会直接语法错误）——注释请单独成行的 Python `#`。
 - **图表交互（2026-09-21 与物探看板对齐；`render_points_html.py`）**：
   - **无独立时间轴**：48 小时页原 `#hslider` 滑块**已整体移除**（连同 CSS 与 `slider.value` 联动）；改为**在 `#hchart` 上点击或拖动**即可选时刻（`pointerdown`/`pointermove` → `drag()` → `update(i)`），图上十字光标与三个要素标记点随动。
   - **日期·时间粗体高亮**：`#hval` 内 `.t` 为 900 字重 / 14.5px / `#C0392B` 红字（**全页唯一时间读数**，格式「月-日 时:分」如「09-21 14:00」）。
@@ -211,6 +221,8 @@ $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
 - **KML 解析**：Polygon 用射线法判断点在多边形内；LineString 读取 `<Placemark><name>` 作测线名（注意从正确元素取，避免显示"(未命名)"），沿测线按大圆距离等距采样。
 - **页眉规范**：显示项目名 + 日期区间 + 生成日期，**不写时区、不写坐标、不写"离线看板"**；测线模式额外显示测线名与长度。
 - **⚠️ `h2` 是 flex 容器，内联标签需处理「空占位」（2026-09-21）**：`.card h2 {display:flex; align-items:center; gap:7px;}`，故任何直接子元素（如 `#dayInfo`）都会成为 flex item——**即使内容为空，仍会吃掉一个 `gap:7px` 的间距**。往标题行内联「已选日期」这类可空标签时，必须配 `#dayInfo:empty {display:none;}`（`display:none` 的 flex item 不参与布局、不计 gap），并**不要再给标签加 `margin-left`**（间距已由 h2 的 `gap` 提供，否则与 gap 叠加成 ~16px）。自检：未选日期时 `getComputedStyle(#dayInfo).display === "none"` 且 `childNodes.length === 0`；标题所在节点的 `nextElementSibling` 应直接是 `.legend`（说明没有多出一行）。
+- **⚠️ Python 里 `//` 是整除、不是注释（2026-09-28 踩过）**：往 `chart_js()` 的 JS 源码里补中文说明时，**绝不能写成 `'…'\n // 说明`** —— Python 会把 `//` 当整除运算符解析，报语法错误。注释必须另起一行用 `#`，或干脆不写注释。
+- **⚠️ `assets/hero-bg.jpg` 是仓库资产，必须随技能一起同步（2026-09-28 踩过）**：漏同步时 `hero_css()` 找不到图会**静默降级**（页头无背景、不报错），肉眼很难判断是图丢了还是本来没做。判定技能是否完整：`weather-engineering-data/` 下应同时有 `assets/hero-bg.jpg`、`data/cn_places.json`（若使用）与 `scripts/*.py`。改完技能跑同步脚本后，用 `git status --short` 确认图片显示为 `create mode`。
 - **⚠️ `chart_js()` 内联 JS 字符串的单引号转义坑（2026-09-21 踩过两次）**：`render_points_html.py` 的 `chart_js()` 用 Python 单引号拼接 JS 源码，JS 里**每一处单引号都必须写成 `\'`**（含 `'</span>'`、`'℃</b>'` 这类续接处）。漏写会让 Python 字符串提前闭合，报 `SyntaxError: '(' was never closed`（指向函数首行 `return (`，极易误判）。**改这一段不要用编辑器手写转义**：推荐用 Python 脚本按"整行定位"替换，并用 `JQ = chr(92) + "'"` 显式构造；改完立刻 `python -m py_compile` 验签。
 
 ## 通用注意事项

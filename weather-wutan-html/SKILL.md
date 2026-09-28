@@ -241,7 +241,8 @@ FETCH_ENABLED = True    # True=启用实时取数；False=暂时关闭（离线 
 - **改完必须离线重渲染才生效**（模板改动不会被已有 HTML 自动套用）：
   `<PY> <SKILLS>/scripts/build_dashboard.py --name "<中文名>" --data <BEIDOU>/wutan/data/<pin>_data.json --outdir <BEIDOU>/wutan/html --outfile <pin>.html`
 - **验证要点**：① 文字可读性（导航按钮、标题、元信息行）；② **版面零位移** —— 渲染后量 `header` 高度与 `.tabs` 底边，应与无背景图时完全一致；③ 地图/图表功能无回归（切 Tab、点采样点出图、48h 图 1 张 / 2 周图 3 张、零 JS 报错）。截图验证用托管 venv 的 playwright（`chromium` 已装），430px 视口即可。
-- 石油工程侧（`weather-engineering-data` 的 `render_points_html.py`）**尚未同步此特性**，如需保持一致需另行移植。
+- **石油工程侧已于 2026-09-28 同步此特性**（`weather-engineering-data` 的 `render_points_html.py`，含 hero 背景 + 气象要素小图标，语义与参数同本技能）。两侧各存一份 `assets/hero-bg.jpg`，**换图时两个技能都要覆盖**，否则两边页头不一致。
+- **⚠️ `assets/hero-bg.jpg` 必须随仓库一起同步**：它曾被漏同步到 git（2026-09-28 修），表现是新机安装后页头**静默无背景**、不报错、极难察觉。跑完同步脚本后用 `git status --short` 确认图片显示为 `create mode`。
 
 ## 气象要素小图标（2026-09-28 新增）
 

@@ -18,10 +18,99 @@ render_points_html.py —— 由 engineering/data/*.json（逐点天气数据）
       重跑点位数据后如需刷新目录页，请单独运行该技能的 build_points_index.py。
 风险等级沿用 weather-engineering-html 的 _sev 阈值（0绿/1黄/2橙/3红）。
 """
-import os, json, glob, sys, html as _html
+import os, json, glob, sys, base64, html as _html
 
 SEV_LABEL = {0: "整体适宜", 1: "需关注", 2: "重点关注", 3: "高度警惕"}
 SEV_COLOR = {0: "#2E8B57", 1: "#E0A92C", 2: "#E0822C", 3: "#C0392B"}
+
+# ===========================================================================
+# 页头背景图（hero，2026-09-28 由物探技能 weather-wutan-html 移植）
+# ---------------------------------------------------------------------------
+# 照片以 base64 内嵌到 CSS 背景，作为 .heroarea（顶部 topbar~tabs 整片）的**背景层**，
+# **不额外占版面**；顶部白色渐隐保证文字可读。与物探侧同一套资源与参数。
+# 资源缺失时 hero_css() 返回空串，页面静默退回纯色页头，不影响其余功能。
+# ===========================================================================
+_HERO_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "hero-bg.jpg")
+HERO_BLEED = "16px"      # 背景左右/上下的外扩量（与 body padding 14px 对齐，做满屏出血）
+HERO_POS_Y = "center"    # 照片纵向取景（资源已预裁成「雪山+作业面」信息带）
+HERO_FADE = (            # 自上而下的白色渐隐，保证文字可读：(CSS 位置, 白色不透明度)
+    ("0%", ".80"), ("44%", ".40"), ("100%", ".04"),
+)
+
+def hero_css():
+    """读取 assets/hero-bg.jpg 并生成页头背景 CSS；无图时返回空串（静默降级）。"""
+    try:
+        with open(_HERO_IMG, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode()
+    except Exception as e:
+        print("hero bg SKIPPED:", repr(e))
+        return ""
+    uri = "data:image/jpeg;base64," + b64
+    stops = ",".join(f"rgba(255,255,255,{a}) {p}" for p, a in HERO_FADE)
+    return (
+        "  .heroarea{position:relative;isolation:isolate;}\n"
+        "  .heroarea::before{content:\"\";position:absolute;z-index:-1;"
+        f"top:-10px;bottom:-14px;left:-{HERO_BLEED};right:-{HERO_BLEED};"
+        "border-radius:0 0 12px 12px;background-color:#EEF0F2;"
+        "background-image:"
+        f"linear-gradient(180deg,{stops}),"
+        f'url("{uri}");'
+        "background-size:100% 100%,cover;"
+        f"background-position:center top,center {HERO_POS_Y};"
+        "background-repeat:no-repeat,no-repeat;}\n"
+        # 页签去底色去吸附，让背景连续铺到页签底部（与物探侧 .tabs 一致）
+        "  .heroarea .tabs{background:transparent;position:static;padding:0;margin:10px 0 12px;}\n"
+        # 照片在文字下方，稍加字色加深 + 极淡白描边，保证 12px 小字仍清晰
+        "  .heroarea h1,.heroarea .unit,.heroarea .sub{position:relative;z-index:1;"
+        "text-shadow:0 1px 0 rgba(255,255,255,.8);}\n"
+        "  .heroarea .sub{color:#4B545C;}\n"
+        "  .heroarea .topbar .backlink,.heroarea .topbar .extlink{box-shadow:0 1px 3px rgba(0,0,0,.10);}\n"
+    )
+
+# ===========================================================================
+# 气象要素小图标（2026-09-28 由物探技能 weather-wutan-html 移植）
+# ---------------------------------------------------------------------------
+# 用法：eic("rain","danger") → 红底雨云；eic("wind") → 灰底风（图例用，不带风险属性）。
+# 语义与物探侧一致：**色块＝风险等级，图形＝要素本身**。
+# ===========================================================================
+EIC = {
+    "rain": '<path d="M20 16.6A5 5 0 0 0 18 7h-1.3A8 8 0 1 0 4 15.3"/>'
+            '<path d="M8 13.2v7.6M12 15.2v7.6M16 13.2v7.6"/>',
+    "snow": '<path d="M12 3.2v17.6M4.2 7.8l15.6 8.4M19.8 7.8 4.2 16.2"/>'
+            '<path d="m12 7-2.2-2.3M12 7l2.2-2.3M12 17l-2.2 2.3M12 17l2.2 2.3"/>',
+    "wind": '<path d="M3.5 9h10a3 3 0 1 0-3-3"/>'
+            '<path d="M4 13.5h11.5a3 3 0 1 1-3 3"/><path d="M4.2 18h5"/>',
+    "temp": '<path d="M14 14.8V4.2a2.2 2.2 0 0 0-4.4 0v10.6a4.4 4.4 0 1 0 4.4 0z"/>',
+    "heat": '<circle cx="12" cy="12" r="4"/>'
+            '<path d="M12 2.6v2.3M12 19.1v2.3M2.6 12h2.3M19.1 12h2.3'
+            'M5.4 5.4l1.7 1.7M16.9 16.9l1.7 1.7M18.6 5.4l-1.7 1.7M7.1 16.9l-1.7 1.7"/>',
+    "fog":  '<path d="M4 8.4h16M6.6 12h10.8M4 15.6h16"/>',
+}
+
+def eic(kind, lvl="plain", size=""):
+    """气象要素小图标：色块＝风险等级（绿 ok / 橙 warn / 红 danger），图形＝要素。
+    size："" 默认 19px / "s" 16px（读数行）/ "xs" 13px（KPI 四宫格）。
+    lvl 传入未知值（含 None）一律退回 .plain，避免出现无底色的「隐形图标」。"""
+    g = EIC.get(kind)
+    if not g:
+        return ""
+    L = lvl if lvl in ("ok", "warn", "danger") else "plain"
+    sz = f" {size}" if size in ("s", "xs") else ""
+    return (f'<span class="eic {L}{sz}" aria-hidden="true">'
+            f'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"'
+            f' stroke-linecap="round" stroke-linejoin="round">{g}</svg></span>')
+
+def lv_rain(v):
+    """小时级降水分级（mm/h）：≥5 暴雨 danger / ≥2 大雨 warn。与 RAIN_H 一致。"""
+    return "danger" if v >= RAIN_H["storm"] else ("warn" if v >= RAIN_H["heavy"] else "ok")
+
+def lv_gust(v):
+    """阵风分级（m/s）：≥17.2 danger（8级） / ≥10.8 warn（6级）。"""
+    return "danger" if v >= 17.2 else ("warn" if v >= 10.8 else "ok")
+
+def lv_temp(v):
+    """温度分级（°C）：≥35 danger（高温） / ≤0 warn（结冰）。"""
+    return "danger" if v >= 35 else ("warn" if v <= 0 else "ok")
 
 # ---------- 小时级短时降水阈值（mm/h）----------
 # 只作用于「未来 48 小时」口径，与物探看板 weather-wutan-html 的 RAIN_H 完全一致：
@@ -192,7 +281,7 @@ def ptype_legend_html():
     """降水类型图例（颜色块）：降雨=蓝 降雪=青 雨夹雪=紫"""
     sw = lambda c, t: (f'<span style="display:inline-flex;align-items:center;gap:3px;margin-left:9px">'
                        f'<i style="width:12px;height:12px;border-radius:3px;background:{c};display:inline-block"></i>{t}</span>')
-    return sw(PT_FILL[1], "降雨") + sw(PT_FILL[2], "降雪") + sw(PT_FILL[3], "雨夹雪")
+    return (eic("rain") + sw(PT_FILL[1], "降雨") + sw(PT_FILL[2], "降雪") + sw(PT_FILL[3], "雨夹雪"))
 
 def svg_bars(dates, values, color, h=160, w=680, sid="", days=None, unit="mm", label="降水", ptypes=None):
     left, right, top, bot = 42, 12, 14, 30
@@ -279,31 +368,42 @@ def alert_desc(daily, s, ph=0.0):
     return "主要关注：" + "；".join(parts) + "。建议据此调整作业安排。"
 
 def impact_bullets(daily, s, ph=0.0):
+    """作业影响与建议。每条前缀「要素小图标（色块＝该条自身的风险等级）＋加粗要素名」，
+    图标等级按本条判据独立计算，不受风险卡口径牵连。"""
     out = []
     focus = [d for d in daily if d["precip"] >= 10]
     pmax = max((d["precip"] for d in daily), default=0)
     if focus:
         tot = round(sum(d["precip"] for d in focus), 1)
-        out.append(f"<b>降水泥泞</b>：连续降雨累计 {tot}mm，井场 / 管沟道路泥泞、设备基础易沉降，加强排水与铺垫，重型车辆限行。")
+        out.append(f"{eic('rain', lv_rain(ph))}<b>降水泥泞</b>：连续降雨累计 {tot}mm，井场 / 管沟道路泥泞、设备基础易沉降，加强排水与铺垫，重型车辆限行。")
     if ph >= RAIN_H["torrent"]:
-        out.append(f"<b>短时大暴雨</b>：最大小时降水 {ph}mm/h（>10mm/h），地面积水快速上涨、管沟与井场排水瞬时超负荷，低洼段设备应提前撤离或垫高，暂停涉水作业。")
+        out.append(f"{eic('rain','danger')}<b>短时大暴雨</b>：最大小时降水 {ph}mm/h（>10mm/h），地面积水快速上涨、管沟与井场排水瞬时超负荷，低洼段设备应提前撤离或垫高，暂停涉水作业。")
     elif ph >= RAIN_H["storm"]:
-        out.append(f"<b>短时暴雨</b>：最大小时降水 {ph}mm/h（>5mm/h），井场局部积水、设备基础可能被冲刷，加强排水、电缆接头包覆防水，重型车辆避开低洼路段。")
+        out.append(f"{eic('rain','danger')}<b>短时暴雨</b>：最大小时降水 {ph}mm/h（>5mm/h），井场局部积水、设备基础可能被冲刷，加强排水、电缆接头包覆防水，重型车辆避开低洼路段。")
     elif ph >= RAIN_H["heavy"]:
-        out.append(f"<b>短时大雨</b>：最大小时降水 {ph}mm/h（>2mm/h），降水强度明显、道路湿滑泥泞，作业面注意防滑防淹，排水沟提前疏通。")
+        out.append(f"{eic('rain','warn')}<b>短时大雨</b>：最大小时降水 {ph}mm/h（>2mm/h），降水强度明显、道路湿滑泥泞，作业面注意防滑防淹，排水沟提前疏通。")
     if s["maxGust"] >= 17.2:
-        out.append(f"<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s（≥8 级），吊装与高处作业需停工避风，加固井架、棚架与临时设施。")
+        out.append(f"{eic('wind','danger')}<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s（≥8 级），吊装与高处作业需停工避风，加固井架、棚架与临时设施。")
     elif s["maxGust"] >= 10.8 or s["maxWind"] >= 10.8:
-        out.append(f"<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s，高处作业注意系挂，零星吊装避开阵风时段。")
+        out.append(f"{eic('wind','warn')}<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s，高处作业注意系挂，零星吊装避开阵风时段。")
     if s["maxTemp"] >= 35:
-        out.append(f"<b>高温</b>：最高温 {s['maxTemp']}°C，防暑降温、避开正午露天作业、设备过热防护与电池管理。")
+        out.append(f"{eic('heat','danger')}<b>高温</b>：最高温 {s['maxTemp']}°C，防暑降温、避开正午露天作业、设备过热防护与电池管理。")
     elif s["minTemp"] <= 0:
-        out.append(f"<b>低温 / 结冰</b>：最低温 {s['minTemp']}°C，人员保暖、道路与设备防滑、备用电源。")
+        out.append(f"{eic('snow','warn')}<b>低温 / 结冰</b>：最低温 {s['minTemp']}°C，人员保暖、道路与设备防滑、备用电源。")
     if pmax >= 25:
-        out.append(f"<b>行车</b>：降雨集中（单日最大 {pmax}mm），山区道路湿滑、能见度下降，谨慎行车、必要时封路。")
+        out.append(f"{eic('fog','warn')}<b>行车</b>：降雨集中（单日最大 {pmax}mm），山区道路湿滑、能见度下降，谨慎行车、必要时封路。")
     if not out:
-        out.append("<b>整体适宜</b>：天气平稳，可按计划推进各项作业；山区小气候仍建议以现场实测为准。")
+        out.append(f"{eic('rain','ok')}<b>整体适宜</b>：天气平稳，可按计划推进各项作业；山区小气候仍建议以现场实测为准。")
     return out
+
+def card_icon(title):
+    """风险卡标题 → 要素图标种类（图形＝要素，底色＝卡上的风险等级）。"""
+    if "大风" in title:                      return "wind"
+    if "降水" in title or "泥泞" in title:    return "rain"
+    if "高温" in title:                      return "heat"
+    if "结冰" in title:                      return "snow"
+    if "气温" in title:                      return "temp"
+    return "fog"                             # 行车 / 能见度
 
 def risk_cards(daily, s, ph=0.0):
     pmax = max((d["precip"] for d in daily), default=0)
@@ -376,6 +476,22 @@ h1 {font-size:19px; margin:2px 0 2px;}
 .chart-h {font-size:12px; font-weight:700; color:#46556a; margin:10px 0 2px;}
 .legend {font-size:11px; color:#7b8a99; margin:2px 0 6px;}
 .legend i {display:inline-block; width:10px; height:3px; vertical-align:middle; margin:0 3px 0 8px;}
+/* 页头背景图容器 .heroarea 的样式由 hero_css() 在「有图时」注入，此处不重复定义；
+   气象要素小图标：色块＝风险等级（绿 ok / 橙 warn / 红 danger），图形＝要素本身；
+   .plain＝不带风险属性（图表图例用），避免与风险等级色混淆 */
+.eic{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;vertical-align:-4px;
+  width:19px;height:19px;border-radius:5px;color:#fff;margin-right:5px;}
+.eic svg{width:13px;height:13px;display:block;}
+.eic.s{width:16px;height:16px;border-radius:4px;margin-right:4px;vertical-align:-3px;}
+.eic.s svg{width:11px;height:11px;}
+/* xs：KPI 四宫格专用。格子窄（430px 下每格约 82px 可用），图标必须够小才不把标签挤断行 */
+.eic.xs{width:13px;height:13px;border-radius:3.5px;margin-right:3px;vertical-align:-2.5px;}
+.eic.xs svg{width:9px;height:9px;}
+.eic.ok{background:#2E8B57;} .eic.warn{background:#E0822C;} .eic.danger{background:#C0392B;} .eic.plain{background:#98A1A6;}
+/* flex 容器（卡片 h2）自带 gap，图标不再另加外边距，避免间距翻倍 */
+.card h2 .eic, .legend .eic{margin-right:0;}
+/* 列表项 / 读数行不是 flex，图标靠外边距与后文拉开一点，避免贴字 */
+ul.adv li .eic, .hval .eic{margin-right:3px;}
 .rc {border-left:4px solid #ccc; border-radius:8px; padding:8px 10px; margin-bottom:8px; background:#fafbfc;}
 .rc.danger {border-color:#C0392B; background:#fdf3f1;} .rc.warn {border-color:#E0822C; background:#fef6ee;} .rc.ok {border-color:#2E8B57; background:#f1f8f4;}
 .rc .rt {font-weight:800; font-size:13px;} .rc .rb {font-size:12px; color:#55636f; margin-top:2px;}
@@ -424,6 +540,21 @@ def chart_js(hourly):
         '  function el(t,a){var e=document.createElementNS(NS,t);for(var k in a)e.setAttribute(k,a[k]);return e;}\n'
         '  function txt(x,y,s,anc,col,sz){var e=el("text",{x:x,y:y,"text-anchor":anc||"end","font-size":sz||9,fill:col||"#9aa"});e.textContent=s;return e;}\n'
         '  var PT_TXT={0:"",1:"降雨",2:"降雪",3:"雨夹雪"};\n'
+        '  // 气象要素小图标（与物探看板同一套 EIC，色块＝风险等级，图形＝要素）\n'
+        '  var EIC_PATH={rain:\'<path d="M20 16.6A5 5 0 0 0 18 7h-1.3A8 8 0 1 0 4 15.3"/><path d="M8 13.2v7.6M12 15.2v7.6M16 13.2v7.6"/>\','
+        'snow:\'<path d="M12 3.2v17.6M4.2 7.8l15.6 8.4M19.8 7.8 4.2 16.2"/><path d="m12 7-2.2-2.3M12 7l2.2-2.3M12 17l-2.2 2.3M12 17l2.2 2.3"/>\','
+        'wind:\'<path d="M3.5 9h10a3 3 0 1 0-3-3"/><path d="M4 13.5h11.5a3 3 0 1 1-3 3"/><path d="M4.2 18h5"/>\','
+        'temp:\'<path d="M14 14.8V4.2a2.2 2.2 0 0 0-4.4 0v10.6a4.4 4.4 0 1 0 4.4 0z"/>\','
+        'heat:\'<circle cx="12" cy="12" r="4"/><path d="M12 2.6v2.3M12 19.1v2.3M2.6 12h2.3M19.1 12h2.3M5.4 5.4l1.7 1.7M16.9 16.9l1.7 1.7M18.6 5.4l-1.7 1.7M7.1 16.9l-1.7 1.7"/>\','
+        'fog:\'<path d="M4 8.4h16M6.6 12h10.8M4 15.6h16"/>\'};\n'
+        '  function eic(kind,lvl){var p=EIC_PATH[kind];if(!p)return "";'
+        'var L=(lvl==="ok"||lvl==="warn"||lvl==="danger")?lvl:"plain";'
+        'return \'<span class="eic \'+L+\' s" aria-hidden="true">\''
+        '+\'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" '
+        'stroke-linecap="round" stroke-linejoin="round">\'+p+\'</svg></span>\';}\n'
+        '  function lvR(v){return v>=5?"danger":(v>=2?"warn":"ok");}\n'
+        '  function lvG(v){return v>=17.2?"danger":(v>=10.8?"warn":"ok");}\n'
+
         '  var PT_FILL={1:"#2E86DE",2:"#5DD6E8",3:"#B07CD6"}; var PT_FB="#9DB4C8";\n'
         '  var tMax=Math.max.apply(null,CH.temp), tMin=Math.min.apply(null,CH.temp);\n'
         '  var tLo=Math.min(tMin,0)-2, tHi=tMax+2;\n'
@@ -512,7 +643,7 @@ def chart_js(hourly):
         '    cmW.setAttribute("cx",xx); cmW.setAttribute("cy",yW(CH.wind[i]));\n'
         '    cmG.setAttribute("cx",xx); cmG.setAttribute("cy",yW(CH.gust[i]));\n'
         '    var ptS=(PT_TXT[CH.ptype[i]]||"");\n'
-        '    valBox.innerHTML=\'<span class="t">\'+fmt(CH.times[i])+\'</span>降水 <b class="pv">\'+CH.precip[i]+\' mm/h\'+(ptS?\' \'+ptS:\'\')+\'</b> 气温 <b class="tv">\'+CH.temp[i]+\'℃</b> 阵风 <b class="gv">\'+CH.gust[i]+\' m/s</b> 均风 <b class="wv">\'+CH.wind[i]+\' m/s</b>\';\n'
+        '    valBox.innerHTML=\'<span class="t">\'+fmt(CH.times[i])+\'</span>\'+eic("rain",lvR(CH.precip[i]))+\'降水 <b class="pv">\'+CH.precip[i]+\' mm/h\'+(ptS?\' \'+ptS:\'\')+\'</b> \'+eic("temp")+\'气温 <b class="tv">\'+CH.temp[i]+\'℃</b> \'+eic("wind",lvG(CH.gust[i]))+\'阵风 <b class="gv">\'+CH.gust[i]+\' m/s</b> \'+eic("wind")+\'均风 <b class="wv">\'+CH.wind[i]+\' m/s</b>\';\n'
         '    paintRead(i);\n'
         '  }\n'
         '  // 时间轴滑块已移除：改为在图表上点击 / 拖动选时\n'
@@ -612,7 +743,8 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
         f'<div class="rc {c[0]}"><span class="tag">{c[2]}'
         + (f"（{rain_hour_label(ph)}）" if "泥泞" in c[1] and ph >= RAIN_H["heavy"] else "")
         + f'</span>'
-        f'<div class="rt">{c[1]}</div><div class="rb">{c[3]}</div></div>' for c in cards)
+        f'<div class="rt">{eic(card_icon(c[1]), c[0])}{c[1]}</div>'
+        f'<div class="rb">{c[3]}</div></div>' for c in cards)
     adv = "".join(f"<li>{b}</li>" for b in impact_bullets(daily, s, ph))
     sub = " · ".join([x for x in [l1, l2, l3] if x])
     # 未来 48 小时（近 2 天）口径：重点提示 Tab 的主口径
@@ -631,10 +763,18 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
     hourly48 = {k: (v[:48] if isinstance(v, list) else v) for k, v in hourly.items()}
     n_hour = len(hourly48.get("time", []))
     near_start = near[0]["date"] if near else rec.get("start_date", "")
+    HERO_CSS = hero_css()   # 页头背景图 CSS（无图时为空串，静默降级）
+    _kpi_eic = {            # KPI 四宫格的要素图标与风险等级：key 与 sNear 字段一一对应
+        "totalPrecip": ("rain", lv_rain(sNear["totalPrecip"])),
+        "maxGust":     ("wind", lv_gust(sNear["maxGust"])),
+        "maxTemp":     ("heat", lv_temp(sNear["maxTemp"])),
+        "minTemp":     ("temp", lv_temp(sNear["minTemp"])),
+    }
     html = f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{name} · 天气看板</title><style>{CSS}</style></head>
+<title>{name} · 天气看板</title><style>{CSS}{HERO_CSS}</style></head>
 <body class="sev{sev3}">
+<div class="heroarea">
 <div class="topbar"><div class="topbar-l"><a href="index.html" class="backlink" id="backLink">&larr; 返回总览</a><script>var b=document.getElementById('backLink');if(new URLSearchParams(location.search).get('from')!=='index'&&b)b.style.display='none';</script></div><div class="topbar-r"><a href="https://leidian.wang" class="extlink" target="_blank" rel="noopener">北斗天气风险治理平台 ↗</a></div></div>
 <h1>{name}</h1>
 <div class="unit">{sub}</div>
@@ -643,6 +783,7 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
 <button class="tab active" data-tab="focus">重点提示</button>
 <button class="tab" data-tab="hourly">未来48小时</button>
 <button class="tab" data-tab="daily">未来2周</button>
+</div>
 </div>
 
 <div class="panel" id="tab-focus">
@@ -654,10 +795,10 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
 </div>
 {far_html}
 <div class="grid">
-<div class="kpi"><div class="v">{sNear['totalPrecip']}</div><div class="l">48h降水 mm</div></div>
-<div class="kpi"><div class="v">{sNear['maxGust']}</div><div class="l">48h最大阵风 m/s</div></div>
-<div class="kpi"><div class="v">{sNear['maxTemp']}</div><div class="l">48h最高温 °C</div></div>
-<div class="kpi"><div class="v">{sNear['minTemp']}</div><div class="l">48h最低温 °C</div></div>
+<div class="kpi"><div class="v">{eic(*_kpi_eic['totalPrecip'], size="xs")}{sNear['totalPrecip']}</div><div class="l">48h降水 mm</div></div>
+<div class="kpi"><div class="v">{eic(*_kpi_eic['maxGust'], size="xs")}{sNear['maxGust']}</div><div class="l">48h最大阵风 m/s</div></div>
+<div class="kpi"><div class="v">{eic(*_kpi_eic['maxTemp'], size="xs")}{sNear['maxTemp']}</div><div class="l">48h最高温 °C</div></div>
+<div class="kpi"><div class="v">{eic(*_kpi_eic['minTemp'], size="xs")}{sNear['minTemp']}</div><div class="l">48h最低温 °C</div></div>
 </div>
 <div class="card"><h2><span class="dot" style="background:var(--sev)"></span>风险面板</h2>{cards_html}</div>
 <div class="card"><h2><span class="dot" style="background:var(--sev)"></span>作业影响与建议</h2>
@@ -678,9 +819,9 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
 <div class="chart-h">逐日降水（mm）</div>
 <div class="legend">柱颜色＝降水类型：{ptype_legend_html()}</div>{chart_precip}
 <div class="chart-h">逐日气温（°C）</div>
-<div class="legend"><i style="background:#E0822C"></i>最高温<i style="background:#2E7DA8"></i>最低温</div>{chart_temp}
+<div class="legend">{eic("temp")}<i style="background:#E0822C"></i>最高温<i style="background:#2E7DA8"></i>最低温</div>{chart_temp}
 <div class="chart-h">逐日阵风 / 均风（m/s）</div>
-<div class="legend"><i style="background:#C0392B"></i>阵风（日最大）<i style="background:#7E57C2"></i>均风（日最大）</div>{chart_wind}
+<div class="legend">{eic("wind")}<i style="background:#C0392B"></i>阵风（日最大）<i style="background:#7E57C2"></i>均风（日最大）</div>{chart_wind}
 </div>
 </div>
 
