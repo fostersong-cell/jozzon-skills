@@ -58,8 +58,9 @@ def hero_css():
         "background-size:100% 100%,cover;"
         f"background-position:center top,center {HERO_POS_Y};"
         "background-repeat:no-repeat,no-repeat;}\n"
-        # 页签去底色去吸附，让背景连续铺到页签底部（与物探侧 .tabs 一致）
-        "  .heroarea .tabs{background:transparent;position:static;padding:0;margin:10px 0 12px;}\n"
+        # 页签只去「底色 + sticky 吸附」两样（不透明底色会盖住背景；吸附时透明背景会把正文透出来），
+        # padding / margin 原样保留 → 页签位置与无背景图时逐像素一致，布局零位移
+        "  .heroarea .tabs{background:transparent;position:static;}\n"
         # 照片在文字下方，稍加字色加深 + 极淡白描边，保证 12px 小字仍清晰
         "  .heroarea h1,.heroarea .unit,.heroarea .sub{position:relative;z-index:1;"
         "text-shadow:0 1px 0 rgba(255,255,255,.8);}\n"
@@ -375,25 +376,25 @@ def impact_bullets(daily, s, ph=0.0):
     pmax = max((d["precip"] for d in daily), default=0)
     if focus:
         tot = round(sum(d["precip"] for d in focus), 1)
-        out.append(f"{eic('rain', lv_rain(ph))}<b>降水泥泞</b>：连续降雨累计 {tot}mm，井场 / 管沟道路泥泞、设备基础易沉降，加强排水与铺垫，重型车辆限行。")
+        out.append(f"{eic('rain', lv_rain(ph), size='xs')}<b>降水泥泞</b>：连续降雨累计 {tot}mm，井场 / 管沟道路泥泞、设备基础易沉降，加强排水与铺垫，重型车辆限行。")
     if ph >= RAIN_H["torrent"]:
-        out.append(f"{eic('rain','danger')}<b>短时大暴雨</b>：最大小时降水 {ph}mm/h（>10mm/h），地面积水快速上涨、管沟与井场排水瞬时超负荷，低洼段设备应提前撤离或垫高，暂停涉水作业。")
+        out.append(f"{eic('rain','danger', size='xs')}<b>短时大暴雨</b>：最大小时降水 {ph}mm/h（>10mm/h），地面积水快速上涨、管沟与井场排水瞬时超负荷，低洼段设备应提前撤离或垫高，暂停涉水作业。")
     elif ph >= RAIN_H["storm"]:
-        out.append(f"{eic('rain','danger')}<b>短时暴雨</b>：最大小时降水 {ph}mm/h（>5mm/h），井场局部积水、设备基础可能被冲刷，加强排水、电缆接头包覆防水，重型车辆避开低洼路段。")
+        out.append(f"{eic('rain','danger', size='xs')}<b>短时暴雨</b>：最大小时降水 {ph}mm/h（>5mm/h），井场局部积水、设备基础可能被冲刷，加强排水、电缆接头包覆防水，重型车辆避开低洼路段。")
     elif ph >= RAIN_H["heavy"]:
-        out.append(f"{eic('rain','warn')}<b>短时大雨</b>：最大小时降水 {ph}mm/h（>2mm/h），降水强度明显、道路湿滑泥泞，作业面注意防滑防淹，排水沟提前疏通。")
+        out.append(f"{eic('rain','warn', size='xs')}<b>短时大雨</b>：最大小时降水 {ph}mm/h（>2mm/h），降水强度明显、道路湿滑泥泞，作业面注意防滑防淹，排水沟提前疏通。")
     if s["maxGust"] >= 17.2:
-        out.append(f"{eic('wind','danger')}<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s（≥8 级），吊装与高处作业需停工避风，加固井架、棚架与临时设施。")
+        out.append(f"{eic('wind','danger', size='xs')}<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s（≥8 级），吊装与高处作业需停工避风，加固井架、棚架与临时设施。")
     elif s["maxGust"] >= 10.8 or s["maxWind"] >= 10.8:
-        out.append(f"{eic('wind','warn')}<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s，高处作业注意系挂，零星吊装避开阵风时段。")
+        out.append(f"{eic('wind','warn', size='xs')}<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s，高处作业注意系挂，零星吊装避开阵风时段。")
     if s["maxTemp"] >= 35:
-        out.append(f"{eic('heat','danger')}<b>高温</b>：最高温 {s['maxTemp']}°C，防暑降温、避开正午露天作业、设备过热防护与电池管理。")
+        out.append(f"{eic('heat','danger', size='xs')}<b>高温</b>：最高温 {s['maxTemp']}°C，防暑降温、避开正午露天作业、设备过热防护与电池管理。")
     elif s["minTemp"] <= 0:
-        out.append(f"{eic('snow','warn')}<b>低温 / 结冰</b>：最低温 {s['minTemp']}°C，人员保暖、道路与设备防滑、备用电源。")
+        out.append(f"{eic('snow','warn', size='xs')}<b>低温 / 结冰</b>：最低温 {s['minTemp']}°C，人员保暖、道路与设备防滑、备用电源。")
     if pmax >= 25:
-        out.append(f"{eic('fog','warn')}<b>行车</b>：降雨集中（单日最大 {pmax}mm），山区道路湿滑、能见度下降，谨慎行车、必要时封路。")
+        out.append(f"{eic('fog','warn', size='xs')}<b>行车</b>：降雨集中（单日最大 {pmax}mm），山区道路湿滑、能见度下降，谨慎行车、必要时封路。")
     if not out:
-        out.append(f"{eic('rain','ok')}<b>整体适宜</b>：天气平稳，可按计划推进各项作业；山区小气候仍建议以现场实测为准。")
+        out.append(f"{eic('rain','ok', size='xs')}<b>整体适宜</b>：天气平稳，可按计划推进各项作业；山区小气候仍建议以现场实测为准。")
     return out
 
 def card_icon(title):
@@ -743,7 +744,7 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
         f'<div class="rc {c[0]}"><span class="tag">{c[2]}'
         + (f"（{rain_hour_label(ph)}）" if "泥泞" in c[1] and ph >= RAIN_H["heavy"] else "")
         + f'</span>'
-        f'<div class="rt">{eic(card_icon(c[1]), c[0])}{c[1]}</div>'
+        f'<div class="rt">{eic(card_icon(c[1]), c[0], size='s')}{c[1]}</div>'
         f'<div class="rb">{c[3]}</div></div>' for c in cards)
     adv = "".join(f"<li>{b}</li>" for b in impact_bullets(daily, s, ph))
     sub = " · ".join([x for x in [l1, l2, l3] if x])
