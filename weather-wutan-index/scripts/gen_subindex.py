@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""物探项目2周天气看板 · 多项目总览页（index.html）生成器。
+"""物探项目两周天气看板 · 多项目总览页（index.html）生成器。
 
 从 beidou/{wutan,engineering}/data 下全部 *_data.json 合并生成总览 index.html：
 按风险等级降序排列项目卡片，顶部含等级统计行与「未来 2 天（48小时）风险」聚焦描述。
@@ -99,7 +99,7 @@ def mmdd(s):
     return s[5:] if s else s
 
 def _day_arrays(d):
-    """逐日（全窗口）跨采集点聚合：降水、阵风、持续风、最低/最高气温。"""
+    """逐日（全窗口）跨作业点聚合：降水、阵风、持续风、最低/最高气温。"""
     daily = d.get("daily", []) or []
     n = len(daily)
     P = [(x.get("p") or 0) for x in daily]
@@ -316,7 +316,7 @@ def card(r):
           <span class="bar"></span>
           <div class="head"><span class="name">{r['name']}</span><span class="tag">{r['label']}</span><span class="ptype">{r['badge']}</span></div>
           <div class="focus">{r['focus']}</div>
-          <div class="meta"><span>{r['kind']}</span><span>{r['start']} ~ {r['end']}</span><span>采样点 {r['npts']}</span></div>
+          <div class="meta"><span>{r['kind']}</span><span>{r['start']} ~ {r['end']}</span><span>作业点 {r['npts']}</span></div>
           <span class="arrow">&rsaquo;</span>
         </a>'''
 
@@ -350,9 +350,9 @@ def page(title, sub_title, label, rows, out_path):
     near_html = f'<div class="near-term">{near_desc}</div>' if near_desc else ""
     start = min(r["start"] for r in rows)
     end = max(r["end"] for r in rows)
-    # 预报天数按实际数据跨度动态显示：2周=14天；若数据仍为 7 天则如实显示，避免错标成 2 周。
+    # 预报天数按实际数据跨度动态显示：两周=14天；若数据仍为 7 天则如实显示，避免错标成 两周。
     ndays = max((r.get("ndays") or 0) for r in rows)
-    span = f"未来 2 周（{ndays} 天）" if ndays >= 13 else (f"未来 {ndays} 天" if ndays else "未来 2 周")
+    span = f"未来两周（{ndays} 天）" if ndays >= 13 else (f"未来 {ndays} 天" if ndays else "未来两周")
     html = f'''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -417,6 +417,8 @@ def page(title, sub_title, label, rows, out_path):
     <span><i style="background:#2E8B57"></i>整体适宜</span>
   </div>
 </div>
+<script async src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>
+<div style="margin-top:16px;padding-top:8px;border-top:1px solid rgba(128,128,128,.18);font-size:11px;color:#9aa0a6;text-align:center;opacity:.6;letter-spacing:.3px">访问统计 · 本页阅读 <span id="busuanzi_container_page_pv"><span id="busuanzi_value_page_pv"></span> 次</span> · 全站访客 <span id="busuanzi_container_site_uv"><span id="busuanzi_value_site_uv"></span> 人</span></div>
 </body>
 </html>
 '''
@@ -426,7 +428,7 @@ def page(title, sub_title, label, rows, out_path):
     print("generated:", out_path, "| rows:", len(rows))
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="物探项目2周天气看板 · 多项目总览页（index.html）生成器")
+    ap = argparse.ArgumentParser(description="物探项目两周天气看板 · 多项目总览页（index.html）生成器")
     ap.add_argument("--base", default=DEFAULT_BASE,
                     help="项目根目录（其下含 beidou/{wutan,engineering}/data），默认当前工作区")
     ap.add_argument("--only", choices=["wutan", "engineering"], default=None,

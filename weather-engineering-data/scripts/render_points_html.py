@@ -3,11 +3,11 @@
 """
 render_points_html.py —— 由 engineering/data/*.json（逐点天气数据）渲染「无地图单页看板」
 ====================================================================================================
-输入：engineering/data/*.json（由 build_points_data.py 生成，meta.kind=="point"，未来 2 周 / 14 天窗口）
+输入：engineering/data/*.json（由 build_points_data.py 生成，meta.kind=="point"，未来 两周 / 14 天窗口）
 输出：
   * engineering/html/{拼音}.html —— 每个点位一张独立无地图看板，分 3 个版面（Tab）：
       - 重点关注：重点关注横幅 + 关键指标四宫格 + 风险面板 + 作业影响建议
-      - 未来2周：3 个逐日图表（降水柱 / 气温双线 / 阵风·均风双线，服务端预渲染 SVG），
+      - 未来两周：3 个逐日图表（降水柱 / 气温双线 / 阵风·均风双线，服务端预渲染 SVG），
                   **可点击图表选日期**并在图上显示带浅底背景的数值框
       - 未来48小时：逐小时图（**点击 / 拖动图表选时刻**，已无独立时间轴滑块），
                   **图上（g.hread）与图下（#hval）同时显示该时刻各要素值**，
@@ -118,7 +118,7 @@ def lv_temp(v):
 # ---------- 小时级短时降水阈值（mm/h）----------
 # 只作用于「未来 48 小时」口径，与物探看板 weather-wutan-html 的 RAIN_H 完全一致：
 #   >2 mm/h 大雨 / >5 mm/h 暴雨 / >10 mm/h 大暴雨
-# 「未来 2 周」逐日图与关键指标仍按日累计 25/50mm，两套口径不混用。
+# 「未来 两周」逐日图与关键指标仍按日累计 25/50mm，两套口径不混用。
 RAIN_H = {"heavy": 2.0, "storm": 5.0, "torrent": 10.0}
 
 def rain_hour_label(v):
@@ -512,7 +512,7 @@ ul.adv li:last-child{border-bottom:none;}
 .hval b.pv {color:#0D47A1; background:#D8E9FA;}
 .hval b.wv {color:#0F5B4C; background:#D9EFE7;}
 .hval b.gv {color:#8A2A0E; background:#FBE0D6;}
-/* 已选日期：行内标签（不单独占一行），内联在「未来 2 周逐日天气」标题行末尾 */
+/* 已选日期：行内标签（不单独占一行），内联在「未来 两周逐日天气」标题行末尾 */
 #dayInfo:empty {display:none;}   /* 未选日期时完全不占位（连 h2 的 flex gap 也不占） */
 .day-chip {display:inline-block; font-weight:900; font-size:12.5px; color:#7a3b12; background:#FFF3D6;
   border:1px solid #E6C877; border-radius:8px; padding:2px 9px; font-variant-numeric:tabular-nums;}
@@ -658,7 +658,7 @@ def chart_js(hourly):
         '</script>\n'
     )
 
-# 「未来 2 周」三个静态图的点选交互：点击选日期 → 红色竖线 + 浅底 pill 数值框（图表 DOM 不重建）
+# 「未来 两周」三个静态图的点选交互：点击选日期 → 红色竖线 + 浅底 pill 数值框（图表 DOM 不重建）
 DAILY_JS = r'''<script>
 (function(){
   var NS="http://www.w3.org/2000/svg";
@@ -781,11 +781,11 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
 <div class="topbar"><div class="topbar-l"><a href="index.html" class="backlink" id="backLink">&larr; 返回总览</a><script>var b=document.getElementById('backLink');if(new URLSearchParams(location.search).get('from')!=='index'&&b)b.style.display='none';</script></div><div class="topbar-r"><a href="https://leidian.wang" class="extlink" target="_blank" rel="noopener">北斗天气风险治理平台 ↗</a></div></div>
 <h1>{name}</h1>
 <div class="unit">{sub}</div>
-<div class="sub">未来 2 周逐小时预报 · <b>{rec['start_date']} ~ {rec['end_date']}</b>　{rec['lon']:.2f}°E {rec['lat']:.2f}°N</div>
+<div class="sub">未来 两周逐小时预报 · <b>{rec['start_date']} ~ {rec['end_date']}</b>　{rec['lon']:.2f}°E {rec['lat']:.2f}°N</div>
 <div class="tabs">
 <button class="tab active" data-tab="focus">重点提示</button>
 <button class="tab" data-tab="hourly">未来48小时</button>
-<button class="tab" data-tab="daily">未来2周</button>
+<button class="tab" data-tab="daily">未来两周</button>
 </div>
 </div>
 
@@ -817,7 +817,7 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
 </div>
 
 <div class="panel" id="tab-daily" style="display:none">
-<div class="card"><h2><span class="dot" style="background:var(--sev)"></span>未来 2 周逐日天气<span id="dayInfo"></span></h2>
+<div class="card"><h2><span class="dot" style="background:var(--sev)"></span>未来 两周逐日天气<span id="dayInfo"></span></h2>
 <div class="legend"><b>点击任意图表选择日期</b>，图上即时显示该日各要素具体数值（再点同处取消；图表本身不动）</div>
 <div class="chart-h">逐日降水（mm）</div>
 <div class="legend">柱颜色＝降水类型：{ptype_legend_html()}</div>{chart_precip}
@@ -844,6 +844,8 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
   tabs.forEach(function(t){t.addEventListener("click",function(){show(t);});});
 })();
 </script>"""
+    html += '<script async src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>'
+    html += '<div style="margin-top:16px;padding-top:8px;border-top:1px solid rgba(128,128,128,.18);font-size:11px;color:#9aa0a6;text-align:center;opacity:.6;letter-spacing:.3px">访问统计 · 本页阅读 <span id="busuanzi_container_page_pv"><span id="busuanzi_value_page_pv"></span> 次</span> · 全站访客 <span id="busuanzi_container_site_uv"><span id="busuanzi_value_site_uv"></span> 人</span></div>'
     html += "</body></html>"
     return html
 

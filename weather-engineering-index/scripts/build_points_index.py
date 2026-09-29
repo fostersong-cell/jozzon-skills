@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-build_points_index.py —— 石油工程「未来 2 周」点位看板 index.html 生成器
+build_points_index.py —— 石油工程「未来 两周」点位看板 index.html 生成器
 =====================================================================
 本脚本从 weather-engineering-data 技能中拆出，专门负责「生成 index」这一件事，
 不再由渲染单个点位看板的脚本顺带产出。
 
 输入：engineering/data/*.json（由 weather-engineering-data 的 build_points_data.py
-      生成，meta.kind=="point"，取数窗口为「下一日 0 时起未来 2 周 / 14 天」）
+      生成，meta.kind=="point"，取数窗口为「下一日 0 时起未来 两周 / 14 天」）
 输出：engineering/html/index.html
-      * 顶部：未来 2 周窗口说明 + 全窗风险等级分布（红/橙/黄/绿计数）
+      * 顶部：未来 两周窗口说明 + 全窗风险等级分布（红/橙/黄/绿计数）
       * 未来 2 天（48 小时）风险短描述块（由 gen_points_summary.build_short 生成，约 50 字）
       * 主体：按「一级 + 二级」分组的可折叠卡片，组内「三级 + 点位」按风险等级降序，
         点击条目跳转到该点位的独立看板 html
@@ -49,7 +49,7 @@ _HERO_CANDIDATES = (
 )
 HERO_BLEED = "14px"          # 与 body 左右 padding 一致 → 背景正好贴到内容区边缘
 # 白纱强度按图分别调：工程用的是钻井井场实景，下半部是深色沙地/钢构，
-# 若照搬物探那套（底部只剩 .04）会把「未来 2 周…」那行压得发闷，故底部保留 .14。
+# 若照搬物探那套（底部只剩 .04）会把「未来 两周…」那行压得发闷，故底部保留 .14。
 HERO_FADE = (("0%", ".82"), ("46%", ".50"), ("100%", ".14"),)
 
 
@@ -185,14 +185,14 @@ def render_index(groups, counts, start_label, end_label=None, short2=None, ndays
                  '<h1 style="margin:0">中石化北斗运营中心 · 石油工程天气看板</h1>'
                  '<a class="extlink" href="https://leidian.wang" target="_blank" rel="noopener">北斗天气风险治理平台 ↗</a>'
                  '</div>')
-    # 跨度标签按实际 daily 长度动态显示：避免 7 天旧数据被错标成“未来 2 周”
+    # 跨度标签按实际 daily 长度动态显示：避免 7 天旧数据被错标成“未来 两周”
     dates = f"{start_label} ~ {end_label}" if end_label else start_label
     if ndays >= 13:
-        span = f"未来 2 周（14 天）· {dates}"
+        span = f"未来 两周（14 天）· {dates}"
     elif ndays > 0:
         span = f"未来 {ndays} 天（{dates}）"
     else:
-        span = f"未来 2 周（{dates}）"
+        span = f"未来 两周（{dates}）"
     span += " · 组内按风险等级降序"
     parts.append(f'<div class="sub">{span}</div>')
     parts.append('</div>')          # 结束 .heroarea（页头背景区：标题 + 窗口说明）
@@ -215,13 +215,15 @@ def render_index(groups, counts, start_label, end_label=None, short2=None, ndays
                 f'<span class="badge" style="background:{SEV_COLOR[r["sev2"]]}">{SEV_LABEL[r["sev2"]]}</span></a>')
         parts.append('</div></div>')
     parts.append('<div class="foot">数据来源 Open-Meteo · 山区小气候可能强于模式预报</div>')
+    parts.append('<script async src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>')
+    parts.append('<div style="margin-top:16px;padding-top:8px;border-top:1px solid rgba(128,128,128,.18);font-size:11px;color:#9aa0a6;text-align:center;opacity:.6;letter-spacing:.3px">访问统计 · 本页阅读 <span id="busuanzi_container_page_pv"><span id="busuanzi_value_page_pv"></span> 次</span> · 全站访客 <span id="busuanzi_container_site_uv"><span id="busuanzi_value_site_uv"></span> 人</span></div>')
     parts.append('</body></html>')
     return "".join(parts)
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="由逐点天气 JSON 生成石油工程「未来 2 周」看板 index.html")
+        description="由逐点天气 JSON 生成石油工程「未来 两周」看板 index.html")
     ap.add_argument("--datadir", default="engineering/data",
                     help="逐点 JSON 数据目录（meta.kind=='point'）")
     ap.add_argument("--htmldir", default="engineering/html", help="index.html 输出目录")
@@ -238,7 +240,7 @@ def main():
 
     files = sorted(glob.glob(os.path.join(datadir, "*.json")))
     recs = []
-    ndays = 0  # 实际预报跨度（按 daily 长度），用于动态显示「未来 2 周 / 未来 N 天」
+    ndays = 0  # 实际预报跨度（按 daily 长度），用于动态显示「未来 两周 / 未来 N 天」
     summary_pts = []  # 供 build_short 生成「未来 2 天风险」短描述
     for fp in files:
         d = json.load(open(fp, encoding="utf-8"))

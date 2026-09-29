@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-物探工区(区域)2周天气看板生成器 —— 富媒体交互式 HTML 版
+物探工区(区域)两周天气看板生成器 —— 富媒体交互式 HTML 版
 
 能力:
   - 输入一个 KML 边框(工区多边形 / 测线 LineString)，自动识别类型
   - 按 --grid km 网格采样(默认 6km，越细点越多，贴合 EC 分辨率；超过 --maxpts 自动加粗)，并加入质心/测线中点
-  - 用 Open-Meteo 多坐标接口分批拉取所有采样点未来2周（14天）逐小时预报（可选 --model ecmwf_ifs04 高分辨率）
-  - 输出以"区域"为单位: 最坏情况包络(逐时最低温/最高降水/最大风)、连续降雨窗口；并为每个采样点计算逐日序列供交互查询
-  - 富媒体交互式 HTML：canvas 地形图(Open-Meteo 高程接口 + 高程色带 + 山体阴影 + 等高线，计曲线加粗) + 参考网格 + 采样点 + 风险区(径向渐变红/橙光斑)
+  - 用 Open-Meteo 多坐标接口分批拉取所有作业点未来两周（14天）逐小时预报（可选 --model ecmwf_ifs04 高分辨率）
+  - 输出以"区域"为单位: 最坏情况包络(逐时最低温/最高降水/最大风)、连续降雨窗口；并为每个作业点计算逐日序列供交互查询
+  - 富媒体交互式 HTML：canvas 地形图(Open-Meteo 高程接口 + 高程色带 + 山体阴影 + 等高线，计曲线加粗) + 参考网格 + 作业点 + 风险区(径向渐变红/橙光斑)
   - 顶部仅一个"重点关注"卡片，按极端天气严重程度(0绿/1黄/2橙/3红)变色；其下依次是关键指标、地图与联动图表、物探作业影响与建议
-  - 点击地图任意采样点，地图下方同一卡片内立即展开该点未来2周逐要素曲线/柱状图(气温/降水/阵风·均风可勾选叠加)；降水图阈值动态取 max(10mm, niceCeil(数据最大值))
+  - 点击地图任意作业点，地图下方同一卡片内立即展开该点未来两周逐要素曲线/柱状图(气温/降水/阵风·均风可勾选叠加)；降水图阈值动态取 max(10mm, niceCeil(数据最大值))
   - 仅输出可交互 HTML（无 PDF 依赖），中文字体子集内嵌，手机/浏览器直接打开
 
 用法:
@@ -93,7 +93,7 @@ def hero_css():
 
 # ---------------- 行政地名点位（地图叠加中文地名）----------------
 # 数据源：阿里云 DataV GeoAtlas（地级市/州/盟 363 + 县级 2814），一次性落盘，生成时离线筛选。
-# 坐标为 GCJ-02，与底图/采集点所用 WGS84 偏差 <1km，在地图尺度（1px≈0.5~2km）不可见。
+# 坐标为 GCJ-02，与底图/作业点所用 WGS84 偏差 <1km，在地图尺度（1px≈0.5~2km）不可见。
 _PLACES_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "cn_places.json")
 
 def pick_places(minlon, maxlon, minlat, maxlat, limit=600):
@@ -123,15 +123,15 @@ ap.add_argument("--name", required=True, help="项目名称，如 大关项目")
 ap.add_argument("--kml", required=False, help="工区边框 KML 文件路径（使用 --data 离线重渲染时可省略）")
 ap.add_argument("--data", default="", help="离线模式：直接读取已抓取的 DATA JSON 文件，跳过 KML 解析与接口调用")
 ap.add_argument("--outdir", default=".", help="输出目录")
-ap.add_argument("--grid", type=float, default=20.0, help="采样点距离间隔 km，默认 20（面/线统一按此距离严格等距采样；线点数超过15自动均匀取15）")
-ap.add_argument("--days", type=int, default=14, help="预报天数，默认 14（2周，从下一整时起）")
+ap.add_argument("--grid", type=float, default=20.0, help="作业点距离间隔 km，默认 20（面/线统一按此距离严格等距采样；线点数超过15自动均匀取15）")
+ap.add_argument("--days", type=int, default=14, help="预报天数，默认 14（两周，从下一整时起）")
 ap.add_argument("--from-today", action="store_true", help="从当前整点开始（默认从下一整点开始，跳过当前小时剩余时间）")
 ap.add_argument("--outfile", default="", help="自定义输出文件名（含 .html，可用拼音/字母/数字），默认 {name}工区/测线.html")
 ap.add_argument("--apikey", default="6aiF2mXsB3K7YcjT")
 ap.add_argument("--model", default="", help="Open-Meteo 模型，如 ecmwf_ifs04（ECMWF 4km 高分辨率）；留空用默认融合模型")
-ap.add_argument("--maxpts", type=int, default=150, help="采样点数量上限（仅线模式二次兜底），面/复合工区按 --grid 距离全区域采样、不限个数")
+ap.add_argument("--maxpts", type=int, default=150, help="作业点数量上限（仅线模式二次兜底），面/复合工区按 --grid 距离全区域采样、不限个数")
 ap.add_argument("--lines", default="", help="附加测线 KML 路径（逗号分隔），与 --kml 边框共同渲染并参与「总区域」采样（复合工区模式，如大关：边框+北/南/中线）")
-ap.add_argument("--points", default="", help="附加数据采集点 KML（含多个 <Placemark><Point>，如炮点/检波点/预警点），逗号分隔；给出时**按采集点直接取数（不面/线采样）**，与 --kml 边框/测线共同渲染（采集点模式）")
+ap.add_argument("--points", default="", help="附加数据作业点 KML（含多个 <Placemark><Point>，如炮点/检波点/预警点），逗号分隔；给出时**按作业点直接取数（不面/线采样）**，与 --kml 边框/测线共同渲染（作业点模式）")
 ap.add_argument("--face", action="store_true", default=False,
                 help="强制按工区(面/多边形)处理：即便 KML 是 LineString 也当作闭合边界采样（用于闭合线工区）")
 ap.add_argument("--line", action="store_true", default=False,
@@ -251,8 +251,8 @@ else:
     line = lines[0]["coords"] if lines else []
     line_name = lines[0]["name"] if lines else ""
 
-    # 附加采集点(--points)：KML 里多个 <Placemark><Point>（如炮点/检波点/预警点），
-    # 给出时【按采集点直接取数，不面/线采样】，与 --kml 边框/测线共同渲染（采集点模式）
+    # 附加作业点(--points)：KML 里多个 <Placemark><Point>（如炮点/检波点/预警点），
+    # 给出时【按作业点直接取数，不面/线采样】，与 --kml 边框/测线共同渲染（作业点模式）
     pts = []; pt_names = []
     if args.points and not args.data:
         for pk in args.points.split(","):
@@ -262,7 +262,7 @@ else:
             try:
                 proot = ET.parse(pk).getroot()
             except Exception as e:
-                print(f"⚠️ 采集点 KML 解析失败 {pk}: {repr(e)}")
+                print(f"⚠️ 作业点 KML 解析失败 {pk}: {repr(e)}")
                 continue
             for pm in proot.iter(KNS + "Placemark"):
                 pt = pm.find(KNS + "Point")
@@ -276,7 +276,7 @@ else:
                 pts.append((float(lon), float(lat)))
                 pt_names.append(nm.text.strip() if (nm is not None and nm.text) else "")
         if pts:
-            print(f"附加采集点(Point): {len(pts)} 个（按采集点直接取数）")
+            print(f"附加作业点(Point): {len(pts)} 个（按作业点直接取数）")
     is_points = bool(pts)
     is_line = is_line and not is_points
     multi = is_line and len(lines) > 1
@@ -317,7 +317,7 @@ else:
         return False
 
     def compass_dir(dx_km, dy_km):
-        """dx_km 向东为正, dy_km 向北为正 → 8 方位中文(用于面/多边形采样点相对工区中心的方向)。"""
+        """dx_km 向东为正, dy_km 向北为正 → 8 方位中文(用于面/多边形作业点相对工区中心的方向)。"""
         if abs(dx_km) < 1e-6 and abs(dy_km) < 1e-6:
             return ""
         ang = math.degrees(math.atan2(dx_km, dy_km))  # 0=北, 90=东
@@ -330,7 +330,7 @@ else:
         all_coords = [c for ln in lines for c in ln["coords"]]
         total_km = sum(sum(distkm(ln["coords"][i-1], ln["coords"][i]) for i in range(1, len(ln["coords"]))) for ln in lines)
     else:
-        # 采集点模式：有边框用边框范围，无边框用采集点范围
+        # 作业点模式：有边框用边框范围，无边框用作业点范围
         all_coords = poly if (poly or not is_points) else pts
     verts = all_coords
     lons = [p[0] for p in verts]; lats = [p[1] for p in verts]
@@ -353,7 +353,7 @@ else:
         _est_n = int(total_km / G) + 1
         if _est_n > LINE_MAX_PTS:
             G = total_km / (LINE_MAX_PTS - 1)
-            print(f"测线总长 {total_km:.0f}km，按 {args.grid:.0f}km 间隔约 {_est_n} 点 > {LINE_MAX_PTS}，改为全线均匀取 {LINE_MAX_PTS} 个采样点（间隔 {G:.1f}km）")
+            print(f"测线总长 {total_km:.0f}km，按 {args.grid:.0f}km 间隔约 {_est_n} 点 > {LINE_MAX_PTS}，改为全线均匀取 {LINE_MAX_PTS} 个作业点（间隔 {G:.1f}km）")
     def _estimate_pts(grid):
         if is_line:
             return max(2, int(total_km / grid) + 2)
@@ -361,7 +361,7 @@ else:
     _est0 = _estimate_pts(G)
     if is_line and _est0 > args.maxpts:  # 仅线启用 maxpts 二次兜底；面不启用（保持 20km 全区域采样）
         G = G * math.sqrt(_est0 / args.maxpts)
-        print(f"采样点估算 {_est0} > 上限 {args.maxpts}，网格自动加粗至 {G:.1f} km")
+        print(f"作业点估算 {_est0} > 上限 {args.maxpts}，网格自动加粗至 {G:.1f} km")
     grid_used = round(G, 1)
 
     # 文件名：线状用「测线」、多边形用「工区」；--outfile 可指定拼音/字母数字文件名
@@ -371,9 +371,9 @@ else:
     # ---------- 1.5 地形底图：Esri World Topo Map 在线瓦片（HTML 端加载，不再抓 Open-Meteo 高程，省请求避免 429） ----------
     elevGrid = None
 
-    # 采样点
+    # 作业点
     samples = []
-    cum = []            # 仅线模式：各采样点沿主线累计 km（兼容旧逻辑）
+    cum = []            # 仅线模式：各作业点沿主线累计 km（兼容旧逻辑）
     line_idx_of = []    # 多线：该点所属测线索引
     line_name_of = []   # 多线：该点所属测线名
     cumkm_of = []       # 多线：该点距所属测线起点累计 km
@@ -381,10 +381,10 @@ else:
     north_of = []       # 多线：该点所属测线「北端是否在起点」
     center_idxs = set() # 中点/中心索引集合
     if is_points:
-        # 采集点模式：直接用 KML 里的 Point 坐标，不做面/线采样
+        # 作业点模式：直接用 KML 里的 Point 坐标，不做面/线采样
         samples = [(round(x, 4), round(y, 4)) for x, y in pts]
         cum = [0.0] * len(samples)
-        # 采集点是真实数据采集位置（炮点/检波点/预警点），无「中心」概念，不标记中心
+        # 作业点是真实数据采集位置（炮点/检波点/预警点），无「中心」概念，不标记中心
         cx = sum(lons) / len(lons); cy = sum(lats) / len(lats)
     elif is_line:
         if not multi:
@@ -443,13 +443,13 @@ else:
                     line_idx_of.append(li); line_name_of.append(name); cumkm_of.append(lc_[k]); linekm_of.append(total_this); north_of.append(north)
                 gi += len(ls_); total_km_sofar += total_this
     else:
-        # 面采样：采样点【严格落在边框多边形内部】。复合工区的附加测线仅用于「展示」，
-        # 不参与采样（此前测线向东溢出边框，导致采样点跑到工区外，已移除）。
+        # 面采样：作业点【严格落在边框多边形内部】。复合工区的附加测线仅用于「展示」，
+        # 不参与采样（此前测线向东溢出边框，导致作业点跑到工区外，已移除）。
         # 做法：①在边框包围盒内按细步长(~G/10)铺细网格，筛出所有 inside() 在区内的候选点，
         #      用半格偏移避免候选点恰落在边界顶点上；②「最远点采样」从候选中挑出间距≈G
         #      (默认20km)的代表点：先取离质心最近的点，再迭代加入离已选集合最远的候选，
         #      直到该最远距离 < 0.75*G。对规则矩形≈网格、对斜向/不规则工区也能均匀覆盖，
-        #      且保证每个采样点都在工区内、间距均匀≈G。
+        #      且保证每个作业点都在工区内、间距均匀≈G。
         uminlon, umaxlon = minlon, maxlon
         uminlat, umaxlat = minlat, maxlat
         ulat0 = (uminlat + umaxlat) / 2.0
@@ -479,7 +479,7 @@ else:
             sel.append(far)
             remaining.remove(far)
         samples = [(round(x, 4), round(y, 4)) for x, y in sel]
-        # 中心 = 距多边形质心最近的采样点
+        # 中心 = 距多边形质心最近的作业点
         best = 0; bd = 1e9
         for k, (x, y) in enumerate(samples):
             d = (x - pcx) ** 2 + (y - pcy) ** 2
@@ -492,7 +492,7 @@ else:
         latkm = (umaxlat - uminlat) * 111.0
         cum = [0.0] * len(samples)
         grid_used = round(G, 1)
-    print(f"采样点(含中心): {len(samples)} (目标间距 {args.grid:.0f}km)")
+    print(f"作业点(含中心): {len(samples)} (目标间距 {args.grid:.0f}km)")
 
     # ---------- 2. 多坐标批量拉取 ----------
     # precipitation=总降水(mm，含液态与降雪水当量) / rain=雨(mm) / showers=阵雨(mm)
@@ -520,7 +520,7 @@ else:
                   f"&wind_speed_unit=ms"
                   f"&timezone=Asia%2FShanghai{key_suffix}")
         url = f"{BASE}?{base_params}" + (f"&models={args.model}" if args.model else "")
-        print(f"Fetching 采样点 {s0+1}-{s0+len(chunk)}/{len(samples)} ...")
+        print(f"Fetching 作业点 {s0+1}-{s0+len(chunk)}/{len(samples)} ...")
         try:
             d = http_get_json(url, timeout=90)
         except Exception as e:
@@ -648,7 +648,7 @@ else:
     NEAR_DAYS = 2        # 「重点提示」聚焦的未来天数（=48 小时）
     # ---- 小时级短时降水分级（mm/h，2026-09-26 用户定）：>2 大雨 / >5 暴雨 / >10 大暴雨 ----
     # 只作用于「未来 48 小时」口径：逐小时风险判定、风险要素、48h 图阈值线、48h 影响卡片、48h 重点关注等级。
-    # 未来 2 周逐日页仍按「日累计」口径（≥25 大雨 / ≥50 暴雨），两套口径不得混用（变量名也刻意区分）。
+    # 未来 两周逐日页仍按「日累计」口径（≥25 大雨 / ≥50 暴雨），两套口径不得混用（变量名也刻意区分）。
     RAIN_H = {"heavy": 2.0, "storm": 5.0, "torrent": 10.0}
     n2 = max(1, min(NEAR_DAYS, len(dailyDates)))
     region_near = region_daily[:n2]
@@ -714,7 +714,7 @@ else:
         pp = peaks_per_point[i]
         # 大致位置标注
         if is_points:
-            loc = pt_names[i] if (i < len(pt_names) and pt_names[i]) else f"采集点 #{i+1}"
+            loc = pt_names[i] if (i < len(pt_names) and pt_names[i]) else f"作业点 #{i+1}"
         elif i in center_idxs:
             loc = (line_name_of[i] + " 中点") if (multi and line_name_of[i]) else ("测线中点" if is_line else "工区中心")
         elif is_line:
@@ -749,7 +749,7 @@ else:
             "tmax": round(pp["tmax"], 1), "tmin": round(pp["tmin"], 1),
             "gustMax": round(pp["gustMax"], 1), "windMax": round(pp["windMax"], 1),
             "pMax": pp["pMax"], "pMaxDay": pp["pMaxDay"],
-            # 近 48 小时（近 2 天）逐点极值：供 t1「关键指标」标注极值所在采样点
+            # 近 48 小时（近 2 天）逐点极值：供 t1「关键指标」标注极值所在作业点
             "tmax2": round(max(_ps["tempMax"][:n2]), 1) if n2 else None,
             "tmin2": round(min(_ps["tempMin"][:n2]), 1) if n2 else None,
             "gustMax2": round(max(_ps["gustMax"][:n2]), 1) if n2 else None,
@@ -820,9 +820,9 @@ for _p in payload["points"]:
     for _ih, _vv in enumerate((_hx.get("precip") or [])[:48]):
         if _vv > _ph_h:
             _ph_h, _ph_i, _ph_pt = round(_vv, 1), _ih, (_p.get("loc") or None)
-payload["peaksNear"]["pHourMax"] = _ph_h      # 48h 内各采样点逐小时降水最大值（mm/h）
+payload["peaksNear"]["pHourMax"] = _ph_h      # 48h 内各作业点逐小时降水最大值（mm/h）
 payload["peaksNear"]["pHourAt"] = _ph_i       # 该峰值出现的小时索引（相对 48h 窗口）
-payload["peaksNear"]["pHourPoint"] = _ph_pt   # 所在采样点的大致位置文案
+payload["peaksNear"]["pHourPoint"] = _ph_pt   # 所在作业点的大致位置文案
 
 DATA_JSON = json.dumps(payload, ensure_ascii=False)
 
@@ -1000,21 +1000,21 @@ TEMPLATE = r"""<!DOCTYPE html>
     <span class="hdnav-l"><a class="backlink" id="backLink" href="index.html">← 返回总览</a><script>var b=document.getElementById('backLink');if(new URLSearchParams(location.search).get('from')!=='index'&&b)b.style.display='none';</script></span>
     <span class="hdnav-r"><a class="extlink" href="https://leidian.wang" target="_blank" rel="noopener">北斗天气风险治理平台 ↗</a></span>
   </div>
-  <h1 id="titleH1">工区2周天气看板</h1>
+  <h1 id="titleH1">工区两周天气看板</h1>
   <div class="meta" id="metaLine"></div>
 </header>
 
 <div class="tabs">
   <button class="tabbtn active" data-tab="t1">重点提示</button>
   <button class="tabbtn" data-tab="t2">未来48小时</button>
-  <button class="tabbtn" data-tab="t3">未来2周</button>
+  <button class="tabbtn" data-tab="t3">未来两周</button>
 </div>
 </div>
 
 <div id="t1" class="tabpane active">
   <div id="alertBox" class="alert sevbox"></div>
   <div class="card">
-    <h2><span class="dot"></span><span id="tStats">关键指标（2 周最坏情况）</span></h2>
+    <h2><span class="dot"></span><span id="tStats">关键指标（两周最坏情况）</span></h2>
     <div class="stats" id="statsBox"></div>
   </div>
   <div class="card">
@@ -1048,7 +1048,7 @@ TEMPLATE = r"""<!DOCTYPE html>
 
 <div id="t3" class="tabpane maptab">
   <div class="card">
-    <h2><span class="dot"></span><span id="tMap3">未来2周（逐日要素）</span></h2>
+    <h2><span class="dot"></span><span id="tMap3">未来两周（逐日要素）</span></h2>
     <div class="legend">
       <span><i style="background:#C0392B;width:16px;height:11px;border-radius:3px"></i>高风险区（暴雨/8级风）</span>
       <span><i style="background:#E0822C;width:16px;height:11px;border-radius:3px"></i>注意区（大雨/大风）</span>
@@ -1077,8 +1077,8 @@ TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const DATA = __DATA__;
 const NS = "http://www.w3.org/2000/svg";
-const LBL = DATA.meta.kind === "line" ? "测线" : (DATA.meta.kind === "points" ? "采集点" : "工区");
-// 采集点「短名」：去掉名称里的项目名与年份前缀（广东-广西深反射0KM → 0KM；XYH2026-SN-01-南端 → SN-01-南端），让地图标签短；
+const LBL = DATA.meta.kind === "line" ? "测线" : (DATA.meta.kind === "points" ? "作业点" : "工区");
+// 作业点「短名」：去掉名称里的项目名与年份前缀（广东-广西深反射0KM → 0KM；XYH2026-SN-01-南端 → SN-01-南端），让地图标签短；
 // 若去掉后同一页面出现重名（不同子工区都叫 SN-01），该组退一档只去掉年份（XYH-SN-01-南端），避免撞名。
 const MAPTAG = (function(){
   const PL = DATA.points || [], cnt = {};
@@ -1110,7 +1110,7 @@ const MAPTAG = (function(){
 })();
 function ptTag(i){ const p = (DATA.points || [])[i]; if(!p) return "";
   return MAPTAG[i] !== undefined ? MAPTAG[i] : (p.loc || ("#" + (i + 1))); }
-let SEL = -1;  // 当前选中采样点；提前声明，供时间轴初始化时调用
+let SEL = -1;  // 当前选中作业点；提前声明，供时间轴初始化时调用
 const VIEW = {};          // 各地图视图状态：{sc 连续缩放倍率(1=适配画布), cx, cy 视图中心}
 const PROJ = {};          // 各地图最近投影参数：{z, sc, scFit, W, Hh, Xc, Yc}（供平移/缩放换算）
 const ZMIN = 0.5, ZMAX = 24;               // 缩放倍率区间
@@ -1126,16 +1126,16 @@ function scheduleRender(suffix){           // 拖动/缩放时每帧至多重绘
   _rafPend[suffix] = requestAnimationFrame(()=>{ _rafPend[suffix] = 0; renderMap(suffix); updZL(suffix); });
 }
 const _txtW = (t,fs) => t.split("").reduce((a,ch)=>a+(ch.charCodeAt(0)>255?fs:fs*0.56),0);
-let DAY_SEL = -1;         // 「未来2周」图表点选的日期索引（-1 未选）
+let DAY_SEL = -1;         // 「未来两周」图表点选的日期索引（-1 未选）
 const _ln = (DATA.meta.multi && DATA.meta.lines) ? DATA.meta.lines.map(l=>l.name).join(" + ") : (DATA.meta.lineName || "测线");
 document.getElementById("titleH1").textContent = DATA.meta.name + (DATA.meta.kind === "line"
-  ? " · " + _ln + "2周天气看板"
-  : (DATA.meta.kind === "points" ? " · 采集点2周天气看板" : " · 工区2周天气看板"));
+  ? " · " + _ln + "两周天气看板"
+  : (DATA.meta.kind === "points" ? " · 作业点两周天气看板" : " · 工区两周天气看板"));
 document.getElementById("tMap2").textContent = LBL + "未来 48 小时（逐小时风险）";
-document.getElementById("tMap3").textContent = LBL + "未来 2 周（逐日要素）";
+document.getElementById("tMap3").textContent = LBL + "未来 两周（逐日要素）";
 document.getElementById("tImpact").textContent = "物探作业天气影响与建议";
 document.getElementById("tStats").textContent = "关键指标（" + LBL + " 未来 48 小时）";
-const _cl=document.getElementById("centerLegend"); if(_cl) _cl.textContent = DATA.meta.kind === "points" ? "◈＝采集点中心" : (DATA.isLine ? "◈＝测线中点" : "◈＝工区中心");
+const _cl=document.getElementById("centerLegend"); if(_cl) _cl.textContent = DATA.meta.kind === "points" ? "◈＝作业点中心" : (DATA.isLine ? "◈＝测线中点" : "◈＝工区中心");
 const P = DATA.peaks, H = DATA.hourly;
 // PN＝未来 48 小时（近 2 天）聚合，供 t1「重点提示」；FARALERT＝第 3~14 天的重大极端天气（仅重大才提示）
 const PN = DATA.peaksNear || DATA.peaks;
@@ -1191,7 +1191,7 @@ function precipIconInBar(parent, ptype, cx, base, bh, bw){
 // ---- 工区地形图（Esri World Topo 瓦片底图）+ 风险区 ----
 function renderMap(suffix){
   let poly = DATA.isLine ? DATA.line : DATA.polygon;
-  // 回退：测线+采集点模式 isLine=False 且 polygon 为空（测线项目无 Polygon），用 DATA.line 作为骨架
+  // 回退：测线+作业点模式 isLine=False 且 polygon 为空（测线项目无 Polygon），用 DATA.line 作为骨架
   if((!poly || !poly.length) && DATA.line && DATA.line.length) poly = DATA.line;
   if(DATA.isLine && DATA.lines){ const all=[]; DATA.lines.forEach(L=>L.forEach(p=>all.push(p))); poly=all; }
   const lons = poly.map(p=>p[0]), lats = poly.map(p=>p[1]);
@@ -1349,7 +1349,7 @@ function renderMap(suffix){
     const circ=el("circle",{cx:cx2,cy:cy2,r:PT_R[pt.risk]||PT_R.ok,fill:c,stroke:"#fff",["stroke-width"]:PT_KR});
     circ.style.cursor="pointer"; circ.addEventListener("click",()=>selectPoint(pt.idx));
     svg.appendChild(circ);
-    // 采集点名称：深色字 + 半透明白底衬（不再用白字/白描边，避免与底图混在一起），字号调小
+    // 作业点名称：深色字 + 半透明白底衬（不再用白字/白描边，避免与底图混在一起），字号调小
     const lt = ptTag(pt.idx);
     const LFS=9.5, ltw=_txtW(lt,LFS);
     svg.appendChild(el("rect",{x:cx2-ltw/2-3,y:cy2-13-LFS-1.5,width:ltw+6,height:LFS+4.2,rx:3.5,
@@ -1380,7 +1380,7 @@ function renderMap(suffix){
   window["POINT_PX"+suffix]=PX; window["POINT_ELS"+suffix]=ELS;
   PROJ[suffix]={z:z, sc:sc, scFit:scFit, W:W, Hh:Hh, Xc:Xc, Yc:Yc};   // 记录投影参数，供拖拽/缩放换算
   redrawSelRing(suffix);                                  // 重绘后补画选中环
-  // 地图空白处点击 → 命中最近采样点（拖拽平移后不触发）
+  // 地图空白处点击 → 命中最近作业点（拖拽平移后不触发）
   svg.style.cursor="crosshair";
   if(!svg._mapClick){ svg._mapClick=function(ev){
     if(svg._justPanned) return;
@@ -1438,7 +1438,7 @@ function panBy(suffix, dx, dy){
   V.cx = Xc/s*360-180;
   V.cy = (2*Math.atan(Math.exp((1-2*Yc/s)*Math.PI))-Math.PI/2)*180/Math.PI;
 }
-// 采集点图标几何（全局唯一来源）：renderMap 绘制、updatePoints 逐小时改色、redrawSel 选中环
+// 作业点图标几何（全局唯一来源）：renderMap 绘制、updatePoints 逐小时改色、redrawSel 选中环
 // 三处必须引用同一套数，否则「按小时改色」或「切 Tab 重绘」时圆点大小会跳变。
 const PT_R={ok:6.4,warn:7.2,danger:8.0};   // 圆点半径（旧 9/10/11 → 约 0.73 倍）
 const PT_KR=1.5;                            // 白描边宽度（旧 2）
@@ -1471,7 +1471,7 @@ function bindMap(suffix){
   // ---- 统一指针手势：鼠标 / 触摸 / 触控笔走同一套 Pointer Events（手机端可用性的关键）----
   // 旧实现拆成 mouse* + touch*，两个在手机上都会坏：
   //   ① 单指 touchstart 里 preventDefault() 会掐掉浏览器随后补发的 click，而选点是绑在 click 上的
-  //      → 手机上点采集点永远没反应（电脑有鼠标，click 正常，所以只在手机上暴露）。
+  //      → 手机上点作业点永远没反应（电脑有鼠标，click 正常，所以只在手机上暴露）。
   //   ② 双指捏合被浏览器自身的「页面缩放」抢走，touchmove 一旦被判定为页面缩放就不可取消，preventDefault 无效。
   // 改用 Pointer Events + touch-action:none（见 .mapbox 的 CSS）后，两处都通，且桌面端行为不变。
   let act=new Map();          // pointerId -> {x,y}；size>=2 即双指
@@ -1565,7 +1565,7 @@ function eic(kind, lvl, small){
        + ` stroke-linecap="round" stroke-linejoin="round">${g}</svg></span>`;
 }
 
-// ============ 时间轴：逐小时风险着色 + 采样点风险原因 ============
+// ============ 时间轴：逐小时风险着色 + 作业点风险原因 ============
 const COLMAP = {ok:"#1F7A6B", warn:"#E0822C", danger:"#C0392B"};
 const RR = document.getElementById("riskReason");
 let CUR_HOUR = 0;
@@ -1594,7 +1594,7 @@ const lvRain = v => v>=RAIN_H.storm ? "danger" : (v>=RAIN_H.heavy ? "warn" : "ok
 const lvGust = v => v>=17.2 ? "danger" : (v>=10.8 ? "warn" : "ok");
 const lvWind = lvGust;
 const lvTemp = v => v>=35 ? "danger" : (v<=0 ? "warn" : "ok");
-// 某采样点在第 h 小时的风险等级（ok/warn/danger）
+// 某作业点在第 h 小时的风险等级（ok/warn/danger）
 // 降水走「小时级短时降水」口径：≥5mm/h（暴雨，含 ≥10 大暴雨）即高风险，≥2mm/h（大雨）即注意；
 // 风/气温沿用原阈值（阵风 17.2 / 10.8 m/s，高温 35℃、低温 0℃）。
 function riskClassAtHour(pt, h){
@@ -1604,7 +1604,7 @@ function riskClassAtHour(pt, h){
   if(g>=10.8 || t<=0 || p>=RAIN_H.heavy) return "warn";      // 大雨
   return "ok";
 }
-// 按当前小时重绘所有采样点颜色
+// 按当前小时重绘所有作业点颜色
 function updatePoints(h, suffix){
   const ELS=window["POINT_ELS"+suffix];
   if(!ELS) return;
@@ -1659,12 +1659,12 @@ function updateReasonPanel(){
 
 
 document.getElementById("metaLine").textContent = DATA.meta.kind === "points"
-  ? `采集点 ${DATA.meta.npts} 个 · ${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`
+  ? `作业点 ${DATA.meta.npts} 个 · ${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`
   : (DATA.meta.kind === "line"
     ? (DATA.meta.multi && DATA.meta.lines
-      ? `测线「${DATA.meta.lines.map(l=>l.name+"("+l.km+"km)").join(" + ")}」共 ${DATA.meta.lineKm}km · 网格 ${DATA.meta.gridKm}km · ${DATA.meta.npts} 个采样点 · ${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`
-      : `测线「${DATA.meta.lineName}」长度 约 ${DATA.meta.lineKm}km · 网格 ${DATA.meta.gridKm}km · ${DATA.meta.npts} 个采样点 · ${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`)
-    : `工区范围 约 ${DATA.meta.lonkm}×${DATA.meta.latkm}km · 网格 ${DATA.meta.gridKm}km · ${DATA.meta.npts} 个采样点 · ${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`);
+      ? `测线「${DATA.meta.lines.map(l=>l.name+"("+l.km+"km)").join(" + ")}」共 ${DATA.meta.lineKm}km · 网格 ${DATA.meta.gridKm}km · ${DATA.meta.npts} 个作业点 · ${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`
+      : `测线「${DATA.meta.lineName}」长度 约 ${DATA.meta.lineKm}km · 网格 ${DATA.meta.gridKm}km · ${DATA.meta.npts} 个作业点 · ${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`)
+    : `工区范围 约 ${DATA.meta.lonkm}×${DATA.meta.latkm}km · 网格 ${DATA.meta.gridKm}km · ${DATA.meta.npts} 个作业点 · ${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`);
 
 // ============ 重点关注（未来 48 小时为主口径；远期仅"重大极端天气"才追加提示） ============
 (function(){
@@ -1680,7 +1680,7 @@ document.getElementById("metaLine").textContent = DATA.meta.kind === "points"
   else if(PN.pMax>=25) th.push(`${PN.pMaxDay.slice(5)} 单日降水 ${PN.pMax}mm（大雨）`);
   if(PN.focusStart) th.push(`${PN.focusStart.slice(5)}~${PN.focusEnd.slice(5)} 连续降雨累计 ${PN.focusTotal}mm`);
   let desc = th.length
-    ? ("近 48 小时主要关注：" + th.join("；") + `。图中共 ${nRisk} 个采样点存在降雨/大风风险，建议据此调整野外作业安排。`)
+    ? ("近 48 小时主要关注：" + th.join("；") + `。图中共 ${nRisk} 个作业点存在降雨/大风风险，建议据此调整野外作业安排。`)
     : "近 48 小时未触发极端天气预警阈值，整体有利于野外作业。";
   if(FARALERT.has) desc += ` 远期（第 3~14 天）另有 ${FARALERT.text}，已超出可靠预报窗口，临近时再提示。`;
   const box=document.getElementById("alertBox");
@@ -1688,10 +1688,10 @@ document.getElementById("metaLine").textContent = DATA.meta.kind === "points"
   box.innerHTML=`<div class="t"><span class="sev-dot"></span>未来 48 小时 · ${LBL2}</div><div class="d">${desc}</div>`;
 })();
 
-// ---- 关键指标（未来 48 小时；副标题标注极值所在采样点的大致位置） ----
+// ---- 关键指标（未来 48 小时；副标题标注极值所在作业点的大致位置） ----
 const argmax = key => DATA.points.reduce((b,p)=> (b===null || (p[key]??-Infinity) > (b[key]??-Infinity)) ? p : b, null);
 const argmin = key => DATA.points.reduce((b,p)=> (b===null || (p[key]??Infinity) < (b[key]??Infinity)) ? p : b, null);
-const locStr = p => p ? ((p.isCenter ? ((DATA.meta.kind==="points" ? "采集点中心" : (DATA.isLine ? "测线中点" : "工区中心"))) : ptTag(p.idx)) + " 采样点") : "";
+const locStr = p => p ? ((p.isCenter ? ((DATA.meta.kind==="points" ? "作业点中心" : (DATA.isLine ? "测线中点" : "工区中心"))) : ptTag(p.idx)) + " 作业点") : "";
 const tmaxP = argmax("tmax2"), tminP = argmin("tmin2"), gustP = argmax("gustMax2"), pmaxP = argmax("pMax2");
 // 每格＝[要素图标, 风险等级(决定图标底色), 指标名, 数值, 说明]；图标底色一眼看出风险程度
 const PH0 = PN.pHourMax||0;   // 48h 最大小时降水（mm/h），关键指标与影响卡共用
@@ -1710,8 +1710,8 @@ document.getElementById("statsBox").innerHTML = stats.map(s=>
   `<div class="stat"><div class="k">${eic(s[0],s[1])}${s[2]}</div><div class="v">${s[3]}</div><div class="k">${s[4]}</div></div>`).join("");
 
 // ---- 影响说明（未来 48 小时口径；地图点击联动展示逐小时/逐日明细） ----
-// 物探作业影响与建议（2026-09-04）：建议针对整个项目，不要再说"采集点"——
-// points 模式下用项目名替代 LBL 里的"采集点"，其他模式沿用 LBL（工区/测线）
+// 物探作业影响与建议（2026-09-04）：建议针对整个项目，不要再说"作业点"——
+// points 模式下用项目名替代 LBL 里的"作业点"，其他模式沿用 LBL（工区/测线）
 // LBL_IMPACT 定义已移除：影响段不再使用前缀（2026-09-04）
 const ib=document.getElementById("impactBox");
 // icon＝要素图标种类；图标底色沿用当前卡片的 level（预警红 / 注意橙 / 安全绿），与右侧徽标同色
@@ -1755,7 +1755,7 @@ function ptLegendHtml(ic){
        + `<span class="lg" style="font-weight:700">降水：</span>`
        + sw(PT_FILL[1],"降雨") + sw(PT_FILL[2],"降雪") + sw(PT_FILL[3],"雨夹雪");
 }
-// 选中采样点的逐要素曲线 / 柱状图 ============
+// 选中作业点的逐要素曲线 / 柱状图 ============
 const EXPLORER = document.getElementById("explorerCharts");
 const ELEM_DEFS = {
   temp:  {name:"气温", unit:"°C", icon:"temp", type:"line2", keys:["tempMax","tempMin"], colors:["#E0822C","#2E7DA8"], labels:["每日最高温","每日最低温"],
@@ -1825,7 +1825,7 @@ function pointLine(svg, labels, series, opt){
   series.forEach((s,si)=>{ let pts=""; s.data.forEach((v,i)=>{ const x=X(i),y=Y(v); pts+=(i?"L":"M")+x.toFixed(1)+" "+y.toFixed(1)+" "; });
     svg.appendChild(el("path",{"class":"geo",d:pts,fill:"none",stroke:s.color,["stroke-width"]:2.4,["stroke-linejoin"]:"round",["stroke-linecap"]:"round"}));
     const mi=s.data.indexOf(Math.max(...s.data)); svg.appendChild(el("circle",{"class":"geo",cx:X(mi),cy:Y(s.data[mi]),r:3.4,fill:s.color,stroke:"#fff",["stroke-width"]:1.5}));
-    // 每个每日点直接标注数值（未来2周 14 天同样标注，不再关闭）：系列已按「大值在上、小值在下」排序
+    // 每个每日点直接标注数值（未来两周 14 天同样标注，不再关闭）：系列已按「大值在上、小值在下」排序
     // （气温=最高温/最低温，风=阵风/均风），故第一条线（最高温/阵风）标在上方（y-6）、
     // 第二条线（最低温/均风）标在下方（y+14），两条线在同一 x 处上下错开、互不遮挡；
     // 仅在 opt.noPointLabels（如有）为真时跳过
@@ -1881,7 +1881,7 @@ function updateExplorerInfo(){
   box.innerHTML = `<b>${ptTag(pt.idx)}</b> · <span class="badge ${riskCls}">${riskTxt}</span>`
      + (DAY_SEL>=0 && DATA.meta.dailyDates[DAY_SEL] ? `<span class="day-read">已选 ${DATA.meta.dailyDates[DAY_SEL]}</span>` : "");
 }
-// 「未来2周」选日期：只重绘红色竖线 + 数值框，不重建图表（图形位置与界面保持不动）
+// 「未来两周」选日期：只重绘红色竖线 + 数值框，不重建图表（图形位置与界面保持不动）
 function paintDaySel(){
   EXPLORER.querySelectorAll("svg.chart").forEach(sv=>{
     const old=sv.querySelector("g.daySel"); if(old) old.remove();
@@ -1894,7 +1894,7 @@ function paintDaySel(){
   });
 }
 function renderExplorer(){
-  if(SEL<0){ EXPLORER.innerHTML='<div class="empty-tip">点击上方地图任意采样点，这里将显示该点未来2周的逐要素曲线 / 柱状图。</div>';
+  if(SEL<0){ EXPLORER.innerHTML='<div class="empty-tip">点击上方地图任意作业点，这里将显示该点未来两周的逐要素曲线 / 柱状图。</div>';
     document.getElementById("explorerInfo").innerHTML=''; return; }
   const pt=DATA.points[SEL];
   updateExplorerInfo();
@@ -1906,7 +1906,7 @@ function renderExplorer(){
   // 「再点同一日取消」由 bindDragPick 的 toggle 逻辑在 pointerup（未拖动）时处理
   const setDay=i=>{ DAY_SEL=i; paintDaySel(); updateExplorerInfo(); };
   const DAY_PICK={ toggle:true, getSel:()=>DAY_SEL, cancel:()=>setDay(-1), apply:i=>setDay(i) };
-  // 2 周（14 天）横轴点位密集：日期刻度隔天标注；数值一律「逐点直接标在图上」（2026-09-21 起，
+  // 两周（14 天）横轴点位密集：日期刻度隔天标注；数值一律「逐点直接标在图上」（2026-09-21 起，
   // 不再因 14 天而关闭标值——用户要求各图直接显示数值，免去点选才能看读数）
   const xopt={tickEvery: nd>9?2:1};
   const sel=selectedElems();
@@ -1960,18 +1960,18 @@ document.querySelectorAll('#elemRowD label').forEach(lb=>{
 document.querySelectorAll('#elemRowD input').forEach(c=>c.addEventListener("change", renderExplorer));
 renderExplorer();
 
-// ============ 选中采样点的「未来 48 小时」逐小时要素合并图（降水柱 + 均风/阵风/气温折线；配色对齐石油工程；可点击图表选时） ============
+// ============ 选中作业点的「未来 48 小时」逐小时要素合并图（降水柱 + 均风/阵风/气温折线；配色对齐石油工程；可点击图表选时） ============
 const H_EXPLORER = document.getElementById("hourlyCharts");
 let HOURLY_SVG = null, HOURLY_MARKER = null, HOURLY_N = 0;
 const HW=680, HH=300, HPL=44, HPR=52, HPT=24, HPB=30;
 function hxOf(i){ return HPL+(HW-HPL-HPR)*(HOURLY_N<=1?0.5:i/(HOURLY_N-1)); }
 function renderHourlyExplorer(){
   H_EXPLORER.innerHTML="";
-  if(SEL<0){ H_EXPLORER.innerHTML='<div class="empty-tip">点击上方地图选择采样点，下方显示该点未来 48 小时要素合并图。</div>';
+  if(SEL<0){ H_EXPLORER.innerHTML='<div class="empty-tip">点击上方地图选择作业点，下方显示该点未来 48 小时要素合并图。</div>';
     HOURLY_N=0; HOURLY_SVG=null; HOURLY_MARKER=null; return; }
   const pt=DATA.points[SEL];
   if(!pt.hx){
-    H_EXPLORER.innerHTML='<div class="empty-tip">该工区采样点较多，逐小时明细未嵌入；请见「未来 2 周」页的逐日要素图表。</div>';
+    H_EXPLORER.innerHTML='<div class="empty-tip">该工区作业点较多，逐小时明细未嵌入；请见「未来 两周」页的逐日要素图表。</div>';
     HOURLY_N=0; HOURLY_SVG=null; HOURLY_MARKER=null; return;
   }
   const box=document.createElement("div"); box.className="ec"; H_EXPLORER.appendChild(box);
@@ -2095,7 +2095,7 @@ function showTab(id){ document.querySelectorAll('.tabpane').forEach(p=>p.classLi
 document.querySelectorAll('.tabbtn').forEach(b=>b.addEventListener('click',()=>{
   showTab(b.dataset.tab);
   if(b.dataset.tab==='t2'){ renderMap("2"); updatePoints(CUR_HOUR,"2"); if(SEL>=0) selectPoint(SEL); }   // 未来48小时：按实际容器宽度重绘地图，并按当前小时着色
-  if(b.dataset.tab==='t3'){ renderMap("3"); if(SEL>=0) selectPoint(SEL); }   // 未来2周：重绘地图（整窗风险着色），并已选点则补画选中环
+  if(b.dataset.tab==='t3'){ renderMap("3"); if(SEL>=0) selectPoint(SEL); }   // 未来两周：重绘地图（整窗风险着色），并已选点则补画选中环
 }));
 // 地图缩放/平移初始化（每个地图各绑一份）
 ["2","3"].forEach(s=>{ if(document.getElementById("mapbox"+s)){ bindMap(s); updZL(s); } });
@@ -2105,12 +2105,14 @@ document.querySelectorAll('.tabbtn').forEach(b=>b.addEventListener('click',()=>{
   const tg=ev.target; if(tg && tg.closest && tg.closest(".mapbox")) ev.preventDefault();
 },{passive:false}));
 </script>
+<script async src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>
+<div style="margin-top:16px;padding-top:8px;border-top:1px solid rgba(128,128,128,.18);font-size:11px;color:#9aa0a6;text-align:center;opacity:.6;letter-spacing:.3px">访问统计 · 本页阅读 <span id="busuanzi_container_page_pv"><span id="busuanzi_value_page_pv"></span> 次</span> · 全站访客 <span id="busuanzi_container_site_uv"><span id="busuanzi_value_site_uv"></span> 人</span></div>
 </body>
 </html>
 """
 
 html = (TEMPLATE.replace("__DATA__", DATA_JSON)
-        .replace("__TITLE__", f"{args.name} · 工区2周天气看板"))
+        .replace("__TITLE__", f"{args.name} · 工区两周天气看板"))
 
 # 内嵌页头背景图（assets/hero-bg.jpg → CSS 背景）
 hc = hero_css()
