@@ -147,7 +147,7 @@ $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
 产出：
 - `engineering/html/{拼音}.html` —— **每个点位一张独立无地图看板**（重点关注横幅·按风险变色 / 关键指标四宫格 / 逐日降水柱+气温双线+阵风·均风双线 SVG / 风险面板 / 作业影响建议 / 未来 48 小时逐小时图）。副标题行末尾内联坐标（同字号，小数点后两位），日期区间加粗高亮。风险等级沿用 weather-engineering-html 的 `_sev` 阈值（0绿整体适宜 / 1黄需关注 / 2橙重点关注 / 3红高度警惕）。
 - **页头背景图（hero 背景层，2026-09-28 由物探技能移植）**：把 `.topbar` → `h1` → `.unit` → `.sub` → `.tabs` **整片**包进 `<div class="heroarea">`，照片作 `::before` **背景层**（`position:absolute; z-index:-1; isolation:isolate`），**不额外占版面**。
-  - 资源 `assets/hero-bg.jpg`（**480×161 / JPEG q82 / 约 21KB**）。**2026-09-28 起工程侧改用「钻井井场」实景图**（井架 + 黄色井场设备 + 戈壁远景），与物探侧的雪原勘探图**内容已不同**；规格一致（480×161、q82，由 1440×485 原图缩到 1/3）。`hero_css()` 读图 → base64 data URI，注入 `CSS` 之后（`<style>{CSS}{HERO_CSS}</style>`）。**无图时返回空串、静默降级为原样页头**（打印 `hero bg SKIPPED:`），不报错、不影响其余功能。
+  - 资源 `assets/hero-bg.jpg`（**720×242 / JPEG q82 / 约 13KB**）。**工程侧用「野外钻井」实景图**（钻井井架 + 戈壁远景，**无储罐/油罐**），与物探侧的雪原勘探图**内容不同**；规格一致（720×242、q82、叠白 0.26 淡化，由 1536×1024 生成图裁切缩到 1/2，2026-09-29 定；初版 480×161 因太糊废弃）。`hero_css()` 读图 → base64 data URI，注入 `CSS` 之后（`<style>{CSS}{HERO_CSS}</style>`）。**无图时返回空串、静默降级为原样页头**（打印 `hero bg SKIPPED:`），不报错、不影响其余功能。
   - **`.tabs` 必须让位**：原 `.tabs` 是 `position:sticky; z-index:5; background:#f4f6f8`（不透明底色会盖住背景）。`hero_css()` 里用更高特异性 `.heroarea .tabs{background:transparent;position:static;}` 覆盖，背景才能连续铺到页签底部。
     ⚠️ **只覆盖 `background` 与 `position` 两项，`padding`/`margin` 必须原样保留**：早先版本连 padding 一起清掉（`padding:0;margin:10px 0 12px`），页签底边 195.4 → 183.4（上移 12px），属"引入的背景硬伤"。去掉这两行后页头 7 项布局指标与无背景图时逐像素一致。
   - 可在 `render_points_html.py` 顶部调：`HERO_BLEED`（出血量，现 `14px`，**必须严格等于页面左右内边距**）/ `HERO_POS_Y`（纵向取景）/ `HERO_FADE`（白色渐隐色标 `(位置, 不透明度)`，现 `("0%",".80") ("44%",".40") ("100%",".04")`）。

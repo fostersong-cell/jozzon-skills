@@ -55,7 +55,7 @@ description: 物探项目2周天气看板「多项目总览页 index.html」生�
 - **图不在本技能里、也不另存一份**：`gen_subindex.py` 的 `hero_css()` 三级探测引用 ——
   `BEIDOU_HERO_BG`（环境变量，换图应急）> 本技能 `assets/hero-bg.jpg` > 兄弟技能 `../weather-wutan-html/assets/hero-bg.jpg`。
   **日常走第三条**：图归 `weather-wutan-html` 维护，本技能自动跟随，**绝不会出现两张图各自更新后不一致**。三级全找不到 → 打印一行提示并**静默降级为纯色页头**，不报错、不中断生成。
-- **规格**：480×161 / JPEG q82 / 约 18 KB（与看板页同一张、同一规格）。base64 内嵌后 index 由约 10 KB 增至约 35 KB。
+- **规格**：720×242 / JPEG q82 / 约 32 KB（与看板页同一张、同一规格，叠白 0.26 淡化）。base64 内嵌后 index 约 52 KB。
 - **`HERO_BLEED = "16px"`** = 页面左右内边距。**必须与实测内边距严格相等**：多 2px 就会让 `scrollWidth > clientWidth`，手机端能左右拖动（看板页曾因写成 16px 而实际 14px 踩过，见 `weather-wutan-html` 的 SKILL.md）。
 - **`HERO_FADE`**（自上而下白纱）：`.78/0% → .38/46% → .03/100%`。物探图是雪原、本身亮，底部可以直接透到 .03。
 - **哪些块不能进 hero 区**：`.near-term`（未来 2 天风险，淡绿底）与 `a.card`（白底卡片）**留在外面**——有底色的块进去会盖住照片。想改 hero 范围时照此判断。
