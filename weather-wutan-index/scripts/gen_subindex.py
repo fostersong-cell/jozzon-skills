@@ -351,33 +351,34 @@ def build_near_term_desc(rows, wd=NEAR_DAYS):
     for k in groups:
         groups[k].sort(reverse=True)  # 按等级降序
     parts = []
-    # 用户规则（2026-10-09）：概述里不再重复括号内的预警等级名（如「（暴雨预警、大雨预警）」），
-    # 正文已用「大雨及以上降水」「七级及以上大风」等文字点明量级，括号属冗余。
-    if groups["rain"]:
-        names = "、".join(n for _, n, _ in groups["rain"][:6])
-        tail = f"等{len(groups['rain'])}个" if len(groups["rain"]) > 6 else ""
-        parts.append(f"{names}{tail} 存在大雨及以上降水，需防范山洪、泥水淹泡与进场道路中断")
-    if groups["snow"]:
-        names = "、".join(n for _, n, _ in groups["snow"][:6])
-        tail = f"等{len(groups['snow'])}个" if len(groups['snow']) > 6 else ""
-        parts.append(f"{names}{tail} 有暴雪/大雪，需防范积雪、道路封闭与设备覆冰")
-    if groups["gust"]:
-        names = "、".join(n for _, n, _ in groups["gust"][:6])
-        tail = f"等{len(groups['gust'])}个" if len(groups["gust"]) > 6 else ""
-        parts.append(f"{names}{tail} 有七级及以上大风，需做好防风加固与高空/吊装作业防范")
-    if groups["tlow"]:
-        names = "、".join(n for _, n, _ in groups["tlow"][:6])
-        parts.append(f"{names} 低温严寒，需防寒保暖与设备防冻")
-    if groups["thigh"]:
-        names = "、".join(n for _, n, _ in groups["thigh"][:6])
-        parts.append(f"{names} 高温，需防暑降温")
+    # 用户规则（2026-10-09）：概述只说最核心的 1~2 类，不必面面俱到——
+    # ① 按各类最高等级排序，只保留前 2 类；② 每类最多点名 3 个项目（其余「等N个」收尾）；
+    # ③ 处置建议压到一句短语；④ 不重复括号内的等级名（正文已用
+    #    「大雨及以上降水」「七级及以上大风」点明量级，括号冗余）。
+    def _top(kind, limit=3):
+        g = groups[kind]
+        names = "、".join(n for _, n, _ in g[:limit])
+        return f"{names}{f'等{len(g)}个' if len(g) > limit else ''}"
+
+    order = sorted(groups, key=lambda k: max((lv for lv, _, _ in groups[k]), default=0), reverse=True)
+    for _k in [k for k in order if groups[k]][:2]:
+        if _k == "rain":
+            parts.append(f"{_top('rain')} 有大雨及以上降水，需防山洪、泥水淹泡与道路中断")
+        elif _k == "gust":
+            parts.append(f"{_top('gust')} 有七级及以上大风，需防风加固与高空作业")
+        elif _k == "snow":
+            parts.append(f"{_top('snow')} 有暴雪/大雪，需防积雪与道路封闭")
+        elif _k == "tlow":
+            parts.append(f"{_top('tlow')} 低温严寒，需防寒保暖与设备防冻")
+        elif _k == "thigh":
+            parts.append(f"{_top('thigh')} 高温，需防暑降温")
     if not parts:
         # 无 lv>=3 显著风险：点出仍有小雨/小风的项目，整体以分散性弱降水为主
         minor = [r["name"] for r in valid if any(k == "rain" or k == "gust" for k, _, _ in (r.get("alerts") or []))]
         if minor:
-            parts.append(f"未来 2 天各项目以分散性小雨/小风为主（如{'、'.join(minor[:6])}），无明显强降雨与大风，整体适宜作业")
+            parts.append(f"未来 2 天各项目以分散性小雨/小风为主（如{'、'.join(minor[:3])}），整体适宜作业")
         else:
-            parts.append("未来 2 天各项目天气平稳，无明显强降雨与大风，整体适宜作业")
+            parts.append("未来 2 天各项目天气平稳，整体适宜作业")
     body = "；".join(parts) + "。"
     return f'<span class="nt-h">未来 {wd} 天（48小时）风险（{start} ~ {end}）</span>{body}'
 

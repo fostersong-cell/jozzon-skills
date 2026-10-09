@@ -1826,19 +1826,21 @@ document.getElementById("metaLine").textContent = DATA.meta.kind === "points"
   const LBL2=DATA.meta.sevLabelNear||DATA.meta.sevLabel;
   document.body.classList.add("sev"+SEV);
   const nRisk = DATA.points.filter(p=>p.risk!=="ok").length;
-  const at = p => p ? `（${p}）` : "";   // 作业点归属：区域包络值必须点名，否则无从查起
+  const at = p => p ? `（${p}）` : "";   // 作业点归属：区域极值必须点名，否则无从查起
+  // 用户规则（2026-10-09）：横幅只说最核心的 1~2 项，按「降水→大风→气温」重要性排序，最多 2 条
   const th=[];
-  if(PN.gustMax>=17.2) th.push(`最大阵风 ${PN.gustMax} m/s（≥8级）${at(PN.gustPoint)}`);
-  if(PN.tmax>=35) th.push(`最高气温 ${PN.tmax}°C（高温）${at(PN.tmaxPoint)}`);
-  if(PN.tmin<=0) th.push(`最低气温 ${PN.tmin}°C（结冰/霜冻）${at(PN.tminPoint)}`);
+  const push = s => { if(th.length<2 && s) th.push(s); };
   // 累计降水用「未来 48 小时」逐小时窗口真实累计，不用两个自然日之和。
   // 对外报「最大单点」值：PN.pSum48 是各小时取各点最大的包络之和，最大可跨点，
   // 没有任何单个作业点能达到该值（实测藏北冻土包络 18.7mm / 最大单点仅 5.3mm），报出来会误导。
   // 包络值仍作为风险等级的保守输入，不外露。
   const _psum = (PN.pSum48Top!=null && PN.pSum48>0) ? PN.pSum48Top : PN.pSum48;
-  if(_psum) th.push(`未来 48 小时最大单点累计降水 ${_psum}mm${at(PN.pSum48Point)}`);
+  if(_psum>=2) push(`最大单点累计降水 ${_psum}mm${at(PN.pSum48Point)}`);
+  if(PN.gustMax>=13.9) push(`最大阵风 ${PN.gustMax} m/s${at(PN.gustPoint)}`);
+  if(PN.tmax>=37) push(`最高气温 ${PN.tmax}°C${at(PN.tmaxPoint)}`);
+  if(PN.tmin<=-15) push(`最低气温 ${PN.tmin}°C${at(PN.tminPoint)}`);
   let desc = th.length
-    ? ("近 48 小时主要关注：" + th.join("；") + `。以上为${PN.nPoints48||DATA.points.length} 个作业点中的区域极值，已标注最不利作业点；共 ${nRisk} 个作业点存在降雨/大风风险，建议据此调整野外作业安排。`)
+    ? ("近 48 小时主要关注：" + th.join("；") + (nRisk ? `。全项目 ${nRisk} 个作业点存在降雨/大风风险` : "") + "。")
     : "近 48 小时未触发极端天气预警阈值，整体有利于野外作业。";
   if(FARALERT.has) desc += ` 远期（第 3~14 天）另有 ${FARALERT.text}，已超出可靠预报窗口，临近时再提示。`;
   const box=document.getElementById("alertBox");
