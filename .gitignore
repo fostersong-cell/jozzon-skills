@@ -13,3 +13,8 @@ desktop.ini
 
 # Node
 node_modules/
+
+# 百度网盘同步临时文件（本仓库位于被网盘同步的工作区内，会周期产生
+# .xxx.py.baiduyun.uploading.cfg 之类，sync-and-push.sh 的 git add -A 会误收）
+*.baiduyun.*
+*.cfg.tmp
