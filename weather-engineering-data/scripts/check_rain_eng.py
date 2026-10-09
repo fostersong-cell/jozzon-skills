@@ -52,7 +52,16 @@ def bullets_text(per_day, ph):
 
 
 def sev(per_day, ph):
-    return R.sev_of_recent(daily(per_day)[:2], ph)
+    # sev_of_recent 已改为吃hourly48（48h 逐小时窗口口径，2026-10-09），
+    # 这里用日均量构造等效的 hourly48：precip 总量=前 2 日之和、小时峰值=ph。
+    cum2 = sum(per_day[:2])
+    hourly48 = {
+        "precipitation": [ph] + [cum2 / 48.0] * 47,
+        "wind_gusts_10m": [0.0] * 48,
+        "wind_speed_10m": [0.0] * 48,
+        "temperature_2m": [20.0] * 48,
+    }
+    return R.sev_of_recent(hourly48)
 
 
 print("== 降水卡等级（48h 小时级阈值，与物探卡片分级一致）")
@@ -72,15 +81,17 @@ ok(lvl == "danger", "日累计≥50 仍走「预警」卡", txt[:50])
 
 print("== 风险等级 sev_of_recent（48h 口径）")
 ok(sev([0.0, 0.0], 0.0) == 0, "pHourMax=0 → 0 整体适宜", str(sev([0.0, 0.0], 0.0)))
-ok(sev([0.0, 0.0], 4.9) == 0, "pHourMax=4.9 → 0（未达暴雨）", str(sev([0.0, 0.0], 4.9)))
+ok(sev([0.0, 0.0], 1.2) == 0, "pHourMax=1.2 → 0（小雨不抬级）", str(sev([0.0, 0.0], 1.2)))
+ok(sev([0.0, 0.0], 1.5) == 1, "pHourMax=1.5 → 1（中雨及以上即至少需关注）", str(sev([0.0, 0.0], 1.5)))
+ok(sev([0.0, 0.0], 4.9) == 1, "pHourMax=4.9 → 1（大雨级，未到重点关注）", str(sev([0.0, 0.0], 4.9)))
 ok(sev([0.0, 0.0], 5.0) == 1, "pHourMax=5 → 1 需关注", str(sev([0.0, 0.0], 5.0)))
 ok(sev([0.0, 0.0], 9.9) == 1, "pHourMax=9.9 → 1（未达大暴雨）", str(sev([0.0, 0.0], 9.9)))
 ok(sev([0.0, 0.0], 10.0) == 2, "pHourMax=10 → 2 重点关注", str(sev([0.0, 0.0], 10.0)))
 ok(sev([0.0, 0.0], 30.0) == 2, "pHourMax=30 → 仍为 2（不越级到 3）", str(sev([0.0, 0.0], 30.0)))
-# 原日累计判据不被破坏
-ok(sev([60.0, 40.0], 0.0) == 2, "日累计 60mm（旧判据）→ 2", str(sev([60.0, 40.0], 0.0)))
-ok(sev([0.0, 0.0], 0.0) == 0 and sev([20.0, 20.0], 0.0) >= 1,
-   "旧日累计 12mm 判据仍在", str(sev([20.0, 20.0], 0.0)))
+# 48h 累计口径（替代原「两个自然日之和」，48h 窗口横跨 3 个自然日）
+ok(sev([60.0, 40.0], 0.0) == 2, "48h 累计 100mm → 2", str(sev([60.0, 40.0], 0.0)))
+ok(sev([20.0, 20.0], 0.0) >= 1, "48h 累计 40mm → 至少 1", str(sev([20.0, 20.0], 0.0)))
+ok(sev([90.0, 80.0], 0.0) == 3, "48h 累计 170mm → 3 高度警惕", str(sev([90.0, 80.0], 0.0)))
 
 print("== 影响建议 bullets")
 b = bullets_text([0.0, 0.0], 1.0)
@@ -95,8 +106,9 @@ ok("整体适宜" in bullets_text([0.0, 0.0], 0.0), "无降水时仍给「整体
 
 print("== 横幅 / 风险焦点文案")
 d3 = daily([0.0, 0.0])
-ok("短时大雨" in R.recent_desc(d3, 2.5), "recent_desc 带小时级", R.recent_desc(d3, 2.5)[:70])
-ok("mm/h" in R.recent_desc(d3, 2.5), "recent_desc 单位 mm/h")
+a2 = R.alert_desc(daily([0.0, 0.0])[:2], dict(SUMMARY, totalPrecip=0), 2.5)
+ok("短时大雨" in a2, "alert_desc 带小时级(短时大雨)", a2[:70])
+ok("mm/h" in a2, "alert_desc 单位 mm/h")
 a = R.alert_desc(daily([0.0, 0.0])[:2], dict(SUMMARY, totalPrecip=0), 6.0)
 ok("短时暴雨" in a, "alert_desc 带小时级", a[:70])
 

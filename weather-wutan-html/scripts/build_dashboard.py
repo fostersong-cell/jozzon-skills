@@ -737,10 +737,14 @@ else:
     near_peak = max(region_near, key=lambda x: x["p"]) if region_near else None
     P48 = {
         "days": n2,
-        "tmax": round(max((max(ps["tempMax"][:n2]) for ps in point_series), default=0), 1),
-        "tmin": round(min((min(ps["tempMin"][:n2]) for ps in point_series), default=0), 1),
-        "gustMax": round(max((max(ps["gustMax"][:n2]) for ps in point_series), default=0), 1),
-        "windMax": round(max((max(ps["windMax"][:n2]) for ps in point_series), default=0), 1),
+        # 阵风/风速/最高/最低气温：一律取未来 48h **逐小时**窗口的极值（temp_max/temp_min/
+        # wind_max/gust_max 是 hourly 的区域包络序列）。
+        # ⚠️ 不可用 daily[:n2] 的两个自然日聚合——48h 窗口从当前整时起算横跨 3 个自然日
+        # （如 10-09 13时~10-11 12时），daily 口径会漏掉第 3 天上午的阵风与高温。
+        "tmax": round(max(temp_max[:HOURS_48], default=0), 1),
+        "tmin": round(min(temp_min[:HOURS_48], default=0), 1),
+        "gustMax": round(max(gust_max[:HOURS_48], default=0), 1),
+        "windMax": round(max(wind_max[:HOURS_48], default=0), 1),
         # 近窗口小时级峰值：降水/降雪取未来 48h 内各点逐时最大值（mm/h）
         "pHourMax": round(max((max(per["precipitation"][p][:HOURS_48]) for p in range(len(locs))), default=0), 2),
         "snowMax": round(max((max(per["snowfall"][p][:HOURS_48]) for p in range(len(locs))), default=0) * 10.0, 2),
@@ -777,11 +781,18 @@ else:
     # 近 48 小时「小时级短时降水」并入：≥10mm/h（大暴雨）→ 2 级、≥5mm/h（暴雨）→ 1 级（日累计 25/50 口径不变）
     def _sev_of(pp):
         _ph = pp.get("pHourMax") or 0
-        if pp["pMax"] >= 80 or _ph >= 20 or pp["gustMax"] >= 20.8 or pp["tmax"] >= 38 or pp["focusTotal"] >= 150:
+        # P48（未来 48h，带pSum48）一律用逐小时窗口真实累计，不用 daily[:2] 的
+        # pMax/focusTotal（两个自然日聚合会漏掉48h 窗口第 3 天那段）；
+        # 全周期 P 没有 pSum48，仍沿用日累计判据。
+        _is48 = "pSum48" in pp
+        _cum = (pp.get("pSum48") or 0) if _is48 else (pp.get("focusTotal") or 0)
+        _pmax = 0 if _is48 else (pp.get("pMax") or 0)
+        if _pmax >= 80 or _ph >= 20 or pp["gustMax"] >= 20.8 or pp["tmax"] >= 38 or _cum >= 150:
             sev = 3
-        elif pp["pMax"] >= 50 or _ph >= RAIN_H["torrent"] or pp["gustMax"] >= 17.2 or pp["tmax"] >= 35 or pp["tmin"] <= -5 or pp["focusTotal"] >= 80:
+        elif _pmax >= 50 or _ph >= RAIN_H["torrent"] or pp["gustMax"] >= 17.2 or pp["tmax"] >= 35 or pp["tmin"] <= -5 or _cum >= 80:
             sev = 2
-        elif pp["pMax"] >= 25 or _ph >= RAIN_H["storm"] or pp["windMax"] >= 10.8 or pp["tmin"] <= 0 or pp["focusTotal"] >= 30:
+        elif (_pmax >= 25 or _ph >= RAIN_H["storm"] or pp["windMax"] >= 10.8
+              or pp["gustMax"] >= 13.9 or pp["tmin"] <= 0 or _cum >= 20):
             sev = 1
         else:
             sev = 0

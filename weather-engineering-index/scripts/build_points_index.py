@@ -180,22 +180,23 @@ def sev_of(daily, s):
     return 0
 
 
-def sev_of_recent(daily3, ph=0.0):
-    """未来 2 天（48 小时）风险等级：仅取 daily 前 2 天聚合，套用与 sev_of 相同阈值。
-    ph = 48h 内最大小时降水（mm/h），短时强降水须计入，否则日累计小的井位会被低估。
-    远端（第 3 天起）预报不确定性大、准确性下降，不作为当前主风险提示。"""
-    pmax = max((d["precip"] for d in daily3), default=0)
-    gust = max((d["gustMax"] for d in daily3), default=0)
-    wind = max((d["windMax"] for d in daily3), default=0)
-    tmax = max((d["tempMax"] for d in daily3), default=99)
-    tmin = min((d["tempMin"] for d in daily3), default=99)
-    cum = sum(d["precip"] for d in daily3)
-    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: sev = 3
-    elif ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: sev = 2
-    elif ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: sev = 1
+def sev_of_recent(pk):
+    """未来 2 天（48 小时）风险等级：全部要素取自 peaks_48h()（hourly[:48] 逐小时窗口）。
+    ⚠️ 不再读 daily[:2] 的两个自然日聚合——48h 窗口从当前整时起算横跨 3 个自然日，
+    daily 口径会漏掉第 3 天上午那段降水/阵风/高温。
+    用户规则（2026-10-09）：中雨及以上（≥1.5mm/h）即至少「需关注」。"""
+    pk = pk or {}
+    ph   = pk.get("pHourMax") or 0.0
+    cum  = pk.get("pSum48") or 0.0
+    gust = pk.get("gust") or 0.0
+    wind = pk.get("wind") or 0.0
+    tmax = pk.get("tmax")
+    tmin = pk.get("tmin")
+    if gust >= 20.8 or (tmax is not None and tmax >= 38) or cum >= 150: sev = 3
+    elif (ph >= 10 or gust >= 17.2 or (tmax is not None and tmax >= 35)
+          or (tmin is not None and tmin <= -5) or cum >= 80): sev = 2
+    elif ph >= 5 or wind >= 10.8 or gust >= 13.9 or (tmin is not None and tmin <= 0) or cum >= 20: sev = 1
     else: sev = 0
-    # 用户规则（2026-10-09）：有明显降雨（中雨及以上，>=1.5mm/h）即至少定为「需关注」；
-    # 降雪、阵风、高/低温仍按各自等级判定，不因这条降雨规则被额外抬级。
     if ph >= 1.5:
         sev = max(sev, 1)
     return sev
@@ -341,7 +342,7 @@ def main():
         # 48h 峰值：从 hourly[:48] / daily[:2] 现算，绝不用整窗 summary（maxGust 等是 14 天峰值）
         pk48 = peaks_48h(d)
         # 48h 评级与 build_short/卡片焦点保持同一口径：纳入小时级短时降水
-        sev2 = sev_of_recent(daily2, pk48.get("pHourMax") or 0.0)
+        sev2 = sev_of_recent(pk48)
         # 五要素预警焦点文字（仅 48h 峰值 → 用户 2026-10-09 阈值）
         # 各要素等级：用于下方「等级抬级」判定（小雨/五级风不抬级，中雨或任一3级才抬）
         a_r = rain_alert(pk48.get("pHourMax"))
@@ -368,7 +369,7 @@ def main():
                      "level3": m["level3"], "slug": slug, "file": slug + ".html",
                      "sev": sev, "sev2": sev2, "focus": focus,
                      "start": m.get("start_date", ""), "end": m.get("end_date", "")})
-        cum2 = sum(x.get("precip", 0) for x in daily2)
+        cum2 = pk48.get("pSum48") or 0.0
         pk2 = max(daily2, key=lambda x: x.get("precip", 0)) if daily2 else {"precip": 0, "date": ""}
         summary_pts.append({
             "name": m["name"], "gq": gongqu(m["name"]),

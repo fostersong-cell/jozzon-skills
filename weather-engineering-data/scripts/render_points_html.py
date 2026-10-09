@@ -143,23 +143,36 @@ def sev_of(daily, s):
     if pmax >= 12 or wind >= 10.8 or tmin <= 0 or focus >= 30: return 1
     return 0
 
-def sev_of_recent(daily2, ph=0.0):
-    """未来 48 小时风险等级：仅取 daily 前 2 天聚合，套用与 sev_of 相同阈值。
-    降水同时看「日累计」与「小时级短时降水」——短时 >10mm/h 按暴雨级给重点关注、>5mm/h 按大雨级给需关注，
-    与物探看板 _sev_of 一致。远端（第 3 天起）不作主风险提示。"""
-    pmax = max((d["precip"] for d in daily2), default=0)
-    gust = max((d["gustMax"] for d in daily2), default=0)
-    wind = max((d["windMax"] for d in daily2), default=0)
-    tmax = max((d["tempMax"] for d in daily2), default=99)
-    tmin = min((d["tempMin"] for d in daily2), default=99)
-    cum = sum(d["precip"] for d in daily2)
-    # ph = 48h 内最大小时降水（mm/h）：短时强降水须计入，否则日累计小的井位会被低估
-    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: sev = 3
-    elif ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: sev = 2
-    elif ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: sev = 1
+def sev_of_recent(hourly48):
+    """未来 48 小时风险等级：全部要素取自 hourly 前 48 个逐时的聚合。
+    ⚠️ 口径铁律（2026-10-09 用户定）：降水/降雪/阵风/风速/最高/最低气温**一律**用逐小时窗口，
+    不用 daily[:2] 的两个自然日——48h 窗口从当前整时起算横跨 3 个自然日
+    （如 10-09 13时~10-11 12时），daily[:2] 漏掉第 3 天上午那段，会低估累计降水
+    并漏掉第 3 天的阵风/高温。与 weather-engineering-index 的 sev_of_recent 完全同口径。
+    用户规则：中雨及以上（≥1.5mm/h）即至少定为「需关注」。"""
+    def _mx(k):
+        v = [x for x in (hourly48.get(k) or []) if isinstance(x, (int, float))]
+        return max(v) if v else None
+
+    def _mn(k):
+        v = [x for x in (hourly48.get(k) or []) if isinstance(x, (int, float))]
+        return min(v) if v else None
+
+    def _sm(k):
+        v = [x for x in (hourly48.get(k) or []) if isinstance(x, (int, float))]
+        return sum(v) if v else 0.0
+
+    ph   = _mx("precipitation") or 0.0
+    cum  = _sm("precipitation")
+    gust = _mx("wind_gusts_10m") or 0.0
+    wind = _mx("wind_speed_10m") or 0.0
+    tmax = _mx("temperature_2m")
+    tmin = _mn("temperature_2m")
+    if gust >= 20.8 or (tmax is not None and tmax >= 38) or cum >= 150: sev = 3
+    elif (ph >= 10 or gust >= 17.2 or (tmax is not None and tmax >= 35)
+          or (tmin is not None and tmin <= -5) or cum >= 80): sev = 2
+    elif ph >= 5 or wind >= 10.8 or gust >= 13.9 or (tmin is not None and tmin <= 0) or cum >= 20: sev = 1
     else: sev = 0
-    # 用户规则（2026-10-09）：有明显降雨（中雨及以上，>=1.5mm/h）即至少定为「需关注」；
-    # 降雪、阵风、高/低温仍按各自等级判定，不因这条降雨规则被额外抬级。
     if ph >= 1.5:
         sev = max(sev, 1)
     return sev
@@ -883,7 +896,7 @@ def main():
         # 近 48 小时最大小时降水（mm/h）：只看前 48 个小时，供 48h 口径的等级/卡片/文案使用
         hourly48 = {k: (v[:48] if isinstance(v, list) else v) for k, v in hourly.items()}
         ph = phour_max(hourly48)
-        sev3 = sev_of_recent(daily3, ph)
+        sev3 = sev_of_recent(hourly48)
         recs.append({"name": m["name"], "level1": m["level1"], "level2": m["level2"],
                      "level3": m["level3"], "slug": slug, "file": slug + ".html",
                      "sev": sev, "sev3": sev3, "start": m["start_date"]})

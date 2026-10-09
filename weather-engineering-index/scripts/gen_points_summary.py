@@ -116,49 +116,67 @@ def gongqu(name):
 
 
 def peaks_48h(d):
-    """从单点位 _data.json 取「未来 48 小时（hourly 前 48 个逐时）」峰值，供 48h 风险判定。
-    与物探 peaksNear 同源：只用近 48h 窗口，不含第 3 天起的远端预报。
-    summary 里的 maxGust/maxTemp/minTemp/pHourMax/snowHourMax 是整窗 14 天峰值，
-    不能直接用于「未来 2 天」叙述，否则会把远端大风/高温当成 48h 风险。
-    返回 dict：pHourMax / snowHourMax（mm/h）/ gust / tmax / tmin。"""
+    """从单点位_data.json 取「未来 48 小时」全部要素峰值，供 48h 风险判定。
+
+    ⚠️ 口径铁律（2026-10-09 用户定）：**所有要素**（降水/降雪/阵风/风速/最高/最低气温）
+    一律取 hourly 前 48 个逐时的聚合，**绝不能用 daily[:2] 的两个自然日聚合**——
+    48h 窗口从「当前整时」起算会横跨 3 个自然日（如 10-09 13时~10-11 12时），
+    daily[:2] 只覆盖前 2 天，漏掉第 3 天上午那段，会显著低估累计降水、
+    并漏掉第 3 天出现的阵风与高温。
+    与单项目看板 render_points_html.h48_precip() 同源同值。
+    返回 dict：pHourMax / snowHourMax（mm/h）/ pSum48（mm）/ gust / wind / tmax / tmin。
+    """
     h = d.get("hourly", {}) or {}
     t = h.get("time", [])
     n = min(48, len(t)) if t else 0
-    precip = h.get("precipitation", []) or []
-    snow = h.get("snowfall", []) or []
-    pH = round(max(precip[:n]), 2) if (n and precip) else None
-    sH = round(max(snow[:n]) * 10.0, 2) if (n and snow) else None
-    # 48h 累计降水：必须用 hourly[:48] 逐小时之和，不能用 daily[:2] 的日累计之和——
-    # 48h 窗口从「当前整时」起算，会横跨 3 个自然日（如 10-09 13时~10-11 12时），
-    # daily[:2] 只覆盖前 2 天，漏掉第 3 天上午那段降水，会显著低估累计值。
-    # 与单项目看板 render_points_html.h48_precip() 口径完全一致。
-    pS = round(sum(v for v in precip[:n] if isinstance(v, (int, float))), 1) if n else None
-    daily = (d.get("daily") or [])[:2]
-    g = max((x.get("gustMax", 0) for x in daily), default=0) if daily else None
-    tmax = max((x.get("tempMax", -99) for x in daily), default=-99) if daily else None
-    tmin = min((x.get("tempMin", 99) for x in daily), default=99) if daily else None
-    return {"pHourMax": pH, "snowHourMax": sH, "pSum48": pS,
-            "gust": g, "tmax": tmax, "tmin": tmin}
+
+    def _vals(key):
+        return [v for v in (h.get(key) or [])[:n] if isinstance(v, (int, float))]
+
+    def _mx(key, scale=1.0):
+        v = _vals(key)
+        return round(max(v) * scale, 2) if v else None
+
+    def _mn(key):
+        v = _vals(key)
+        return round(min(v), 2) if v else None
+
+    def _sum(key):
+        v = _vals(key)
+        return round(sum(v), 1) if v else None
+
+    return {
+        "pHourMax": _mx("precipitation"),
+        "snowHourMax": _mx("snowfall", 10.0),      # cm/h → mm/h
+        "pSum48": _sum("precipitation"),
+        "gust": _mx("wind_gusts_10m"),
+        "wind": _mx("wind_speed_10m"),
+        "tmax": _mx("temperature_2m"),
+        "tmin": _mn("temperature_2m"),
+    }
 
 
-def sev_of_recent(days, ph=0.0):
-    cum = sum((d.get("precip") or 0) for d in days)
-    pmax = max((d.get("precip") or 0) for d in days)
-    gust = max((d.get("gustMax") or 0) for d in days)
-    wind = max((d.get("windMax") or 0) for d in days)
-    tmax = max((d.get("tempMax", -99) or -99) for d in days)
-    tmin = min((d.get("tempMin", 99) or 99) for d in days)
-    # ph = 48h 内最大小时降水（mm/h）：短时强降水须计入，否则日累计小的井位会被误判为无风险
-    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150:
+def sev_of_recent(pk):
+    """未来 48 小时风险等级：全部要素取自 peaks_48h()（hourly[:48] 逐小时窗口），
+    不再读 daily[:2] 的两个自然日聚合（48h 窗口横跨 3 个自然日，daily 口径会漏掉第 3 天）。
+    阈值沿用原口径；用户规则（2026-10-09）：明显降雨（中雨及以上 ≥1.5mm/h）即至少「需关注」，
+    降雪/阵风/高低温仍按各自等级，不因这条降雨规则额外抬级。"""
+    pk = pk or {}
+    ph   = pk.get("pHourMax") or 0.0
+    cum  = pk.get("pSum48") or 0.0
+    gust = pk.get("gust") or 0.0
+    wind = pk.get("wind") or 0.0
+    tmax = pk.get("tmax")
+    tmin = pk.get("tmin")
+    if gust >= 20.8 or (tmax is not None and tmax >= 38) or cum >= 150:
         sev = 3
-    elif ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80:
+    elif (ph >= 10 or gust >= 17.2 or (tmax is not None and tmax >= 35)
+          or (tmin is not None and tmin <= -5) or cum >= 80):
         sev = 2
-    elif ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20:
+    elif ph >= 5 or wind >= 10.8 or gust >= 13.9 or (tmin is not None and tmin <= 0) or cum >= 20:
         sev = 1
     else:
         sev = 0
-    # 用户规则（2026-10-09）：有明显降雨（中雨及以上，即 >=1.5mm/h）即至少定为「需关注」；
-    # 降雪、阵风、高/低温仍按各自等级判定，不因这条降雨规则被额外抬级。
     if rain_alert(ph) >= 2:
         sev = max(sev, 1)
     return sev
@@ -200,17 +218,20 @@ def load_points(datadir, n=2):
         if not d3:
             continue
         s = d.get("summary", {}) or {}
-        cum = sum((x.get("precip") or 0) for x in d3)
-        pmax = max((x.get("precip") or 0) for x in d3)
-        gust = max((x.get("gustMax") or 0) for x in d3)
-        wind = max((x.get("windMax") or 0) for x in d3)
-        tmax = max((x.get("tempMax", -99) or -99) for x in d3)
-        tmin = min((x.get("tempMin", 99) or 99) for x in d3)
-        pk = max(d3, key=lambda x: (x.get("precip") or 0))
-        # 48h 峰值：从 hourly[:48] / daily[:2] 现算，绝不用整窗 summary（maxGust 等是 14 天峰值）
+        # 48h 峰值：全部要素从 hourly[:48] 现算（阵风/风速/气温也不再用 daily[:2]）
         pk48 = peaks_48h(d)
         phm = pk48.get("pHourMax") or 0.0
-        sev = sev_of_recent(d3, phm)
+        # 48h 累计降水：逐小时窗口真实累计，与项目页 h48_precip() 同源同值
+        cum = pk48.get("pSum48") or 0.0
+        sev = sev_of_recent(pk48)
+        # 以下仅为 md 表格「单日峰值/日期」展示用，保留 daily 口径（daily[:2]）
+        d3 = daily[:n]
+        pmax = max((x.get("precip") or 0) for x in d3)
+        pk = max(d3, key=lambda x: (x.get("precip") or 0))
+        gust = pk48.get("gust") or 0.0
+        wind = pk48.get("wind") or 0.0
+        tmax = pk48.get("tmax") if pk48.get("tmax") is not None else -99
+        tmin = pk48.get("tmin") if pk48.get("tmin") is not None else 99
         pts.append({
             "name": m.get("name", f),
             "gq": gongqu(m.get("name", "")),
@@ -220,7 +241,7 @@ def load_points(datadir, n=2):
             "tmax": round(tmax, 1), "tmin": round(tmin, 1),
             "pkdate": pk.get("date"), "pkp": round(pk.get("precip") or 0, 1),
             "sev": sev,
-            # 48h 峰值（hourly[:48] / daily[:2]），供五要素预警判定；不使用整窗 summary 的远端峰值
+            # 48h 峰值（hourly[:48]），供五要素预警判定；不使用整窗 summary 的远端峰值
             "pHourMax": pk48.get("pHourMax"),
             "snowHourMax": pk48.get("snowHourMax"),
             "maxGust": pk48.get("gust"),
