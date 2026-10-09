@@ -36,6 +36,73 @@ AREA_MAP = {
     "紫台村": "川东管道（湖北恩施一带）",
 }
 
+# ===== 五要素预警阈值（2026-10-09 用户定；降水/降雪=mm/h 小时级，阵风 m/s，温度 ℃）=====
+# 文本严格按用户口径；原字典笔误已修正：阵风 0 级「阵风阵风」→「阵风正常」；
+# 高温 40 度原误写成 key=2（与 37 度重复），更正为 key=3。
+RAIN_ALERT  = {0: "降雨正常", 1: "小雨预警(0.2mm/h)", 2: "中雨预警(1.5mm/h)",
+               3: "大雨预警(3mm/h)", 4: "暴雨预警(6mm/h)", 5: "大暴雨预警(15mm/h)"}
+SNOW_ALERT  = {0: "正常", 1: "小雪预警(>0.1mm/h)", 2: "中雪预警(>0.5mm/h)",
+               3: "大雪预警(>1mm/h)", 4: "暴雪预警(>2mm/h)"}
+GUST_ALERT  = {0: "阵风正常", 1: "劲风五级预警(8.0m/s)", 2: "强风六级预警(10.8m/s)",
+               3: "疾风七级预警(13.9m/s)", 4: "大风八级预警(17.2m/s)"}
+THIGH_ALERT = {0: "温度正常", 1: "35度高温预警（35度）", 2: "37度酷热预警（37度）",
+               3: "40度极端高温预警（40度）"}
+TLOW_ALERT  = {0: "温度正常", 1: "零下5度寒冷预警（零下5度）",
+               2: "零下15度严寒预警（零下15度）", 3: "零下25度极寒预警（零下25度）"}
+
+def rain_alert(mmh):
+    if mmh is None: return 0
+    if mmh >= 15: return 5
+    if mmh >= 6:  return 4
+    if mmh >= 3:  return 3
+    if mmh >= 1.5: return 2
+    if mmh >= 0.2: return 1
+    return 0
+
+def snow_alert(mmh):
+    if mmh is None: return 0
+    if mmh >= 2:   return 4
+    if mmh >= 1:   return 3
+    if mmh >= 0.5: return 2
+    if mmh >= 0.1: return 1
+    return 0
+
+def gust_alert(mps):
+    if mps is None: return 0
+    if mps >= 17.2: return 4
+    if mps >= 13.9: return 3
+    if mps >= 10.8: return 2
+    if mps >= 8.0:  return 1
+    return 0
+
+def thigh_alert(t):
+    if t is None: return 0
+    if t >= 40: return 3
+    if t >= 37: return 2
+    if t >= 35: return 1
+    return 0
+
+def tlow_alert(t):
+    if t is None: return 0
+    if t <= -25: return 3
+    if t <= -15: return 2
+    if t <= -5:  return 1
+    return 0
+
+def alert_items(rain_mmh, snow_mmh, gust, tmax, tmin):
+    out = []
+    r = rain_alert(rain_mmh)
+    if r: out.append(RAIN_ALERT[r])
+    s = snow_alert(snow_mmh)
+    if s: out.append(SNOW_ALERT[s])
+    g = gust_alert(gust)
+    if g: out.append(GUST_ALERT[g])
+    h = thigh_alert(tmax)
+    if h: out.append(THIGH_ALERT[h])
+    l = tlow_alert(tmin)
+    if l: out.append(TLOW_ALERT[l])
+    return out
+
 
 def gongqu(name):
     """取点位名的工区前缀（连续中文字符，遇数字/字母截断）。"""
@@ -48,18 +115,19 @@ def gongqu(name):
     return "".join(run) or name
 
 
-def sev_of_recent(days):
+def sev_of_recent(days, ph=0.0):
     cum = sum((d.get("precip") or 0) for d in days)
     pmax = max((d.get("precip") or 0) for d in days)
     gust = max((d.get("gustMax") or 0) for d in days)
     wind = max((d.get("windMax") or 0) for d in days)
     tmax = max((d.get("tempMax", -99) or -99) for d in days)
     tmin = min((d.get("tempMin", 99) or 99) for d in days)
+    # ph = 48h 内最大小时降水（mm/h）：短时强降水须计入，否则日累计小的井位会被误判为无风险
     if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150:
         return 3
-    if pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80:
+    if ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80:
         return 2
-    if pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20:
+    if ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20:
         return 1
     return 0
 
@@ -99,6 +167,7 @@ def load_points(datadir, n=2):
         d3 = daily[:n]
         if not d3:
             continue
+        s = d.get("summary", {}) or {}
         cum = sum((x.get("precip") or 0) for x in d3)
         pmax = max((x.get("precip") or 0) for x in d3)
         gust = max((x.get("gustMax") or 0) for x in d3)
@@ -106,7 +175,8 @@ def load_points(datadir, n=2):
         tmax = max((x.get("tempMax", -99) or -99) for x in d3)
         tmin = min((x.get("tempMin", 99) or 99) for x in d3)
         pk = max(d3, key=lambda x: (x.get("precip") or 0))
-        sev = sev_of_recent(d3)
+        phm = s.get("pHourMax") or 0.0
+        sev = sev_of_recent(d3, phm)
         pts.append({
             "name": m.get("name", f),
             "gq": gongqu(m.get("name", "")),
@@ -116,6 +186,12 @@ def load_points(datadir, n=2):
             "tmax": round(tmax, 1), "tmin": round(tmin, 1),
             "pkdate": pk.get("date"), "pkp": round(pk.get("precip") or 0, 1),
             "sev": sev,
+            # 小时级峰值（mm/h），供五要素预警判定（旧数据缺时回退 None → 该要素不触发）
+            "pHourMax": s.get("pHourMax"),
+            "snowHourMax": s.get("snowHourMax"),
+            "maxGust": s.get("maxGust"),
+            "maxTemp": s.get("maxTemp"),
+            "minTemp": s.get("minTemp"),
             "start": m.get("start_date"),
         })
     return pts
@@ -135,75 +211,90 @@ def top_risk_wells(pts, k=3):
 
 
 def build_short(pts, n=2):
-    """生成「未来 N 天风险」短描述：除说明主风险区域外，点名最需要关注的井位。"""
+    """生成「未来 N 天风险」叙述：点名主要风险井位，并逐类说明具体风险（区域、量级、影响）。
+    预警判定严格套用 2026-10-09 用户定的五要素阈值，但对外只给定性严重度
+    （大雨量级、6-7级大风等），不罗列 mm/h、m/s、℃ 等原始阈值数字。"""
     if not pts:
         return "暂无点位数据，暂无法评估。"
-    # 主风险工区：需关注点位最多，其次累计降水最高（不对外列等级）
+    # 主风险工区：需关注点位最多，其次累计降水最高
     gq_map = {}
     for p in pts:
-        g = p["gq"]
-        if g not in gq_map:
-            gq_map[g] = {"pts": [], "n_sev1": 0, "cum": 0}
-        gq_map[g]["pts"].append(p)
+        gq_map.setdefault(p["gq"], {"pts": [], "n_sev1": 0, "cum": 0.0, "gust": 0.0})
+        e = gq_map[p["gq"]]
+        e["pts"].append(p)
         if p["sev"] >= 1:
-            gq_map[g]["n_sev1"] += 1
-        gq_map[g]["cum"] += p["cum"]
+            e["n_sev1"] += 1
+        e["cum"] += p["cum"]
+        e["gust"] = max(e["gust"], p["gust"])
     main_gq = max(gq_map, key=lambda g: (gq_map[g]["n_sev1"], gq_map[g]["cum"]))
     top = max(gq_map[main_gq]["pts"], key=lambda x: x["cum"])
     gq = main_gq
     area = AREA_MAP.get(gq, "")
     area_txt = f"（{area}）" if area else ""
     cum = top["cum"]
-    pkp = top["pkp"]
     pkdate = top["pkdate"]
-    # 远端日（第 n+1 天起）
-    far = None
-    for p in pts:
-        if p.get("start"):
-            try:
-                dt = datetime.datetime.strptime(p["start"], "%Y-%m-%d") + datetime.timedelta(days=n)
-                far = dt.strftime("%Y-%m-%d")
-            except Exception:
-                pass
-            break
-    far_lbl = (md_label(far) + "以后") if far else f"第 {n+1} 天起"
-    # 显著程度判定（仅用于措辞，不对外列等级）
-    gmax_gust = max(p["gust"] for p in pts)
-    gmax_tmax = max(p["tmax"] for p in pts)
-    if cum < 10 and gmax_gust < 10.8 and gmax_tmax < 35:
-        return f"未来 {n} 天各工区整体风险可控，无明显强降雨与大风，保持常态监测即可。"
-    if cum >= 50:
-        rl = "较强降雨"
-    elif cum >= 25:
-        rl = "中到大雨"
-    elif cum >= 10:
-        rl = "小到中雨"
-    else:
-        rl = ""
-    if rl:
-        hazard = f"{gq}工区{area_txt}有{rl}（约{cum:.0f}毫米、{md_label(pkdate)}最集中）"
-    else:
-        hazard = "天气整体平稳"
-    # 处置建议：兼顾降水与大风/高温，避免与井位提示自相矛盾
-    if cum >= 25:
-        rec = "注意井场积水与道路防滑，合理安排作业与运输"
-    elif cum >= 10:
-        rec = "注意道路湿滑，合理安排出行"
-    elif gmax_gust >= 10.8:
-        rec = "注意大风防范，加固临时设施"
-    elif gmax_tmax >= 35:
-        rec = "注意防暑降温与设备散热"
-    else:
-        rec = "保持常态监测"
+    pkdate_md = md_label(pkdate) if pkdate else ""
     # 最需要关注的井位（按 48h 风险等级 + 累计降水降序）
     wells = top_risk_wells(pts, k=3)
+    # 五要素预警等级（用于判定风险类型与严重度，不写阈值数字）
+    r  = max((rain_alert(p.get("pHourMax"))   for p in pts), default=0)
+    sn = max((snow_alert(p.get("snowHourMax")) for p in pts), default=0)
+    g  = max((gust_alert(p.get("maxGust"))    for p in pts), default=0)
+    th = max((thigh_alert(p.get("maxTemp"))   for p in pts), default=0)
+    tl = max((tlow_alert(p.get("minTemp"))    for p in pts), default=0)
+
+    # 无任何风险：简短收尾
+    if not wells and r == 0 and sn == 0 and g == 0 and th == 0 and tl == 0:
+        return f"未来 {n} 天各工区整体平稳，无明显强降雨、大风或极端温度，保持常态监测即可。"
+
+    # 首句：点名主要风险井位
     if wells:
         max_sev = max(p["sev"] for p in pts if p.get("sev", 0) >= 1)
         verb = "需重点关注" if max_sev >= 2 else "需关注"
-        well_part = f"其中{wells}{verb}，{rec}"
+        head = f"未来 {n} 天主要风险在{wells}{verb}"
     else:
-        well_part = rec
-    return f"未来 {n} 天整体风险可控；{hazard}，{well_part}；{far_lbl}风险视临近预报另行提示。"
+        head = f"未来 {n} 天整体风险可控，但个别井位仍需注意"
+
+    # 中段：逐类描述具体风险（定性严重度 + 影响），不写原始阈值
+    clauses = []
+    # —— 降雨 ——
+    if r or cum >= 10:
+        if cum >= 50 or r >= 4:
+            rl = "暴雨量级"
+        elif cum >= 25 or r >= 3:
+            rl = "大雨量级"
+        elif cum >= 10 or r >= 1:
+            rl = "小到中雨"
+        else:
+            rl = "弱降雨"
+        rain_c = f"{gq}工区{area_txt}未来 {n} 天累计降雨可达{rl}"
+        if pkdate_md:
+            rain_c += f"（{pkdate_md}前后最集中）"
+        rain_c += "，山区井场需防范井场积涝、道路湿滑与运输受阻"
+        clauses.append(rain_c)
+    # —— 大风 ——
+    if g:
+        glv = {1: "5级左右", 2: "6级左右", 3: "7级左右", 4: "8级及以上"}[g]
+        wind_c = f"阵风可达{glv}大风"
+        if g >= 2:
+            wind_c += "，需加固井架、临时设施与高空作业防风"
+        else:
+            wind_c += "，注意临边与高空作业防风"
+        clauses.append(wind_c)
+    # —— 降雪 ——
+    if sn:
+        clauses.append("高海拔井位有降雪，注意道路结冰与设备防冻")
+    # —— 高温 ——
+    if th:
+        ttxt = {1: "35℃上下", 2: "37℃上下", 3: "40℃上下"}[th]
+        clauses.append(f"高温（{ttxt}），注意防暑降温与设备散热")
+    # —— 低温 ——
+    if tl:
+        ttxt = {1: "零下5℃上下", 2: "零下15℃上下", 3: "零下25℃上下"}[tl]
+        clauses.append(f"低温（{ttxt}），注意人员防寒与设备防冻保温")
+
+    body = "；".join(clauses)
+    return f"{head}：{body}。"
 
 
 def main():

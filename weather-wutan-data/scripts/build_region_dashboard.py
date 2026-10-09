@@ -305,16 +305,20 @@ per = {k: [var(loc, k) for loc in locs] for k in
 per["liquid"] = [[round(r + s, 2) for r, s in zip(per["rain"][p], per["showers"][p])]
                  for p in range(len(locs))]
 
-def ptype_of(liq, snow, pr):
-    """降水类型码：0=无 1=降雨 2=降雪 3=雨夹雪（snowfall 单位 cm，仅以 >0 判有无）"""
+def ptype_of(liq, snow, pr, temp=None):
+    """降水类型码：0=无 1=降雨 2=降雪 3=雨夹雪（snowfall 单位 cm，仅以 >0 判有无）
+    温度规则（2026-10-08 起）：temp < 0℃ 一律判降雪；temp ≥ 0℃ 且雨雪同现才判雨夹雪。"""
     has_l, has_s = liq > 0.05, snow > 0.01
+    if temp is not None and temp < 0.0:
+        return 2 if (has_l or has_s or pr > 0.05) else 0
     if has_l and has_s: return 3
     if has_s: return 2
     if has_l: return 1
     return 1 if pr > 0.05 else 0
 
 per["ptype"] = [[ptype_of(per["liquid"][p][t], per["snowfall"][p][t],
-                          per["precipitation"][p][t]) for t in range(n)]
+                          per["precipitation"][p][t], per["temperature_2m"][p][t])
+                 for t in range(n)]
                 for p in range(len(locs))]
 
 # 区域逐时包络
@@ -351,6 +355,7 @@ for p in range(len(locs)):
 dailyDates = sorted({t[:10] for t in times})
 def point_daily(p):
     tMinD, tMaxD, pD, lD, sD, wD, gD = {}, {}, {}, {}, {}, {}, {}
+    pTempD = {}   # 当日「有降水时段」的最高气温，用于按温度判降水类型
     for t, tv, pv, lv, sv, wv, gv in zip(times,
             per["temperature_2m"][p], per["precipitation"][p], per["liquid"][p],
             per["snowfall"][p], per["wind_speed_10m"][p], per["wind_gusts_10m"][p]):
@@ -360,13 +365,16 @@ def point_daily(p):
         pD[d] = pD.get(d, 0.0) + max(pv, 0.0)
         lD[d] = lD.get(d, 0.0) + max(lv, 0.0)     # 每日降雨（rain+showers）
         sD[d] = sD.get(d, 0.0) + max(sv, 0.0)     # 每日降雪（cm）
+        if pv > 0.05 or lv > 0.05 or sv > 0.01:   # 该时有降水 → 记录气温（取最高）
+            pTempD[d] = max(pTempD.get(d, -999.0), tv)
         (wD.setdefault(d, [])).append(wv)
         (gD.setdefault(d, [])).append(gv)
     return {
         "tempMin": [round(min(tMinD[d]), 1) for d in dailyDates],
         "tempMax": [round(max(tMaxD[d]), 1) for d in dailyDates],
         "precip":  [round(pD.get(d, 0.0), 1) for d in dailyDates],
-        "ptype":   [ptype_of(lD.get(d, 0.0), sD.get(d, 0.0), pD.get(d, 0.0))
+        "ptype":   [ptype_of(lD.get(d, 0.0), sD.get(d, 0.0), pD.get(d, 0.0),
+                             pTempD.get(d))
                     for d in dailyDates],
         "liquid":  [round(lD.get(d, 0.0), 1) for d in dailyDates],
         "snow":    [round(sD.get(d, 0.0), 1) for d in dailyDates],

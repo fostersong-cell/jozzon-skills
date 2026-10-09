@@ -153,27 +153,51 @@ def sev_of_recent(daily2, ph=0.0):
     tmax = max((d["tempMax"] for d in daily2), default=99)
     tmin = min((d["tempMin"] for d in daily2), default=99)
     cum = sum(d["precip"] for d in daily2)
+    # ph = 48h 内最大小时降水（mm/h）：短时强降水须计入，否则日累计小的井位会被低估
     if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: return 3
     if ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: return 2
     if ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: return 1
     return 0
 
-def recent_desc(daily3, ph=0.0):
-    d0, d2 = daily3[0]["date"][5:], daily3[-1]["date"][5:]
-    cum = round(sum(d["precip"] for d in daily3), 1)
-    pmax = max((d["precip"] for d in daily3), default=0)
-    gust = max((d["gustMax"] for d in daily3), default=0)
-    parts = [f"{d0}~{d2} 累计降水 {cum}mm（单日最大 {pmax}mm）"]
-    if ph > 0:
-        parts.append(f"最大小时降水 {ph}mm/h（{rain_hour_label(ph)}）")
-    if gust >= 10.8:
-        parts.append(f"阵风最大 {gust}m/s")
-    return "；".join(parts) + "。远端（第 3 天起）预报不确定性较大，临近时再提示。"
+def h48_precip(hourly48):
+    """未来 48 小时（起始小时起连续 48 个逐小时）累计降水 mm。
+    不用「两个自然日之和」——当日已过去大半，两日累计会明显偏大。"""
+    pr = (hourly48.get("precipitation") or [])[:48]
+    return round(sum(pr), 1)
 
-def _near_summary(daily2, ph=0.0):
-    """由 daily 前 2 天（=未来 48 小时窗口）聚合出 summary 字段，供「重点提示」Tab 使用。"""
+def h48_span(hourly48):
+    """未来 48 小时窗口的起止时刻文案（如 `10-09 12 时~10-11 11 时`）。"""
+    ts = (hourly48.get("time") or [])[:48]
+    if not ts:
+        return "未来 48 小时"
+    def lab(t):
+        d, hm = t.split("T", 1)
+        return f"{d[5:]} {int(hm[:2])} 时"
+    return f"未来 48 小时（{lab(ts[0])}~{lab(ts[-1])}）"
+
+def alert_desc(daily, s, ph=0.0, hourly48=None):
+    """「主要关注」卡片：降水量采用未来 48 小时窗口口径。"""
+    parts = []
+    cum = h48_precip(hourly48 or {})
+    if cum >= 0.5:
+        parts.append(f"{h48_span(hourly48 or {})}累计降水 {cum}mm")
+    if ph >= RAIN_H["heavy"]:
+        parts.append(f"{rain_hour_label(ph)}最大小时降水 {ph}mm/h")
+    if s["maxGust"] >= 10.8:
+        parts.append(f"阵风最大 {s['maxGust']}m/s")
+    if s["maxTemp"] >= 32:
+        parts.append(f"最高温 {s['maxTemp']}°C")
+    if s["minTemp"] <= 0:
+        parts.append(f"最低温 {s['minTemp']}°C（结冰风险）")
+    if not parts:
+        parts.append("未来 48 小时天气整体平稳，无明显极端天气")
+    return "主要关注：" + "；".join(parts) + "。建议据此调整作业安排。"
+
+def _near_summary(daily2, ph=0.0, hourly48=None):
+    """「重点提示」Tab 的 48h 口径聚合。totalPrecip 用未来 48 小时逐小时累计
+    （不是两个自然日之和），风/温仍取 daily 前 2 天极值。"""
     return {
-        "totalPrecip": round(sum(d["precip"] for d in daily2), 1),
+        "totalPrecip": h48_precip(hourly48 or {}),
         "pHourMax": ph,                 # 48h 内最大小时降水（mm/h），与 totalPrecip 并列展示
         "maxGust": round(max(d["gustMax"] for d in daily2), 1),
         "maxTemp": round(max(d["tempMax"] for d in daily2), 1),
@@ -350,26 +374,6 @@ def svg_lines(dates, series, h=160, w=680, sid="", days=None, unit=""):
     return "".join(p)
 
 # ---------- 文案生成 ----------
-def alert_desc(daily, s, ph=0.0):
-    parts = []
-    focus = [d for d in daily if d["precip"] >= 10]
-    if focus:
-        f0, f1 = focus[0]["date"][5:], focus[-1]["date"][5:]
-        tot = round(sum(d["precip"] for d in focus), 1)
-        span = f"{f0}~{f1}" if f0 != f1 else f0
-        parts.append(f"{span} 连续降雨（累计 {tot}mm）")
-    if ph >= RAIN_H["heavy"]:
-        parts.append(f"{rain_hour_label(ph)}最大小时降水 {ph}mm/h")
-    if s["maxGust"] >= 10.8:
-        parts.append(f"阵风最大 {s['maxGust']}m/s")
-    if s["maxTemp"] >= 32:
-        parts.append(f"最高温 {s['maxTemp']}°C")
-    if s["minTemp"] <= 0:
-        parts.append(f"最低温 {s['minTemp']}°C（结冰风险）")
-    if not parts:
-        parts.append("未来 48 小时天气整体平稳，无明显极端天气")
-    return "主要关注：" + "；".join(parts) + "。建议据此调整作业安排。"
-
 def impact_bullets(daily, s, ph=0.0):
     """作业影响与建议。每条前缀「要素小图标（色块＝该条自身的风险等级）＋加粗要素名」，
     图标等级按本条判据独立计算，不受风险卡口径牵连。"""
@@ -752,7 +756,10 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
     sub = " · ".join([x for x in [l1, l2, l3] if x])
     # 未来 48 小时（近 2 天）口径：重点提示 Tab 的主口径
     near = daily[:2]
-    sNear = _near_summary(near, ph)
+    # 未来 48 小时逐小时图：仅取前 48 个小时（须先算，_near_summary/文案都要用）
+    hourly48 = {k: (v[:48] if isinstance(v, list) else v) for k, v in hourly.items()}
+    n_hour = len(hourly48.get("time", []))
+    sNear = _near_summary(near, ph, hourly48)
     far = far_alert(daily)
     if far:
         far_html = (f'<div class="card" style="border-left:4px solid #C0392B;margin-bottom:12px">'
@@ -760,11 +767,7 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
                     f'<div class="rc danger"><div class="rb">{far}。远端预报不确定性较大，临近时请关注属地最新预警。</div></div></div>')
     else:
         far_html = ('<div class="card" style="border-left:4px solid #2E8B57;margin-bottom:12px">'
-                    '<div class="rc ok"><div class="rb">未来 2~14 天暂无明显重大极端天气'
-                    '（暴雨≥50mm / 阵风≥17.2 / 高温≥35 / 严寒≤-5），临近时再提示。</div></div></div>')
-    # 未来 48 小时逐小时图：仅取前 48 个小时
-    hourly48 = {k: (v[:48] if isinstance(v, list) else v) for k, v in hourly.items()}
-    n_hour = len(hourly48.get("time", []))
+                    '<div class="rc ok"><div class="rb">未来 2-14 天暂无明显重大极端天气，临近时再提示。</div></div></div>')
     near_start = near[0]["date"] if near else rec.get("start_date", "")
     HERO_CSS = hero_css()   # 页头背景图 CSS（无图时为空串，静默降级）
     _kpi_eic = {            # KPI 四宫格的要素图标与风险等级：key 与 sNear 字段一一对应
@@ -791,11 +794,7 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
 
 <div class="panel" id="tab-focus">
 <div class="alert"><div class="t"><span class="dot"></span>{SEV_LABEL[sev3]}</div>
-<div class="d">{alert_desc(near, sNear, ph)}</div></div>
-<div class="card" style="border-left:4px solid {SEV_COLOR[sev3]};margin-bottom:12px">
-<div class="chart-h" style="margin:0 0 6px;color:{SEV_COLOR[sev3]}">未来 48 小时风险焦点</div>
-<div class="rc {'danger' if sev3>=3 else 'warn' if sev3>=1 else 'ok'}"><div class="rb">{recent_desc(daily3, ph) if daily3 else ''}</div></div>
-</div>
+<div class="d">{alert_desc(near, sNear, ph, hourly48)}</div></div>
 {far_html}
 <div class="grid">
 <div class="kpi"><div class="v">{eic(*_kpi_eic['totalPrecip'], size="xs")}{sNear['totalPrecip']}</div><div class="l">48h降水 mm</div></div>

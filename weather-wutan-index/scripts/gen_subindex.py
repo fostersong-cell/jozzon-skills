@@ -9,7 +9,7 @@
 超出该窗口的远预报仅以「临近时再提示」一句话点出，不作主风险。
 """
 
-import json, os, glob, argparse, base64
+import json, os, glob, argparse, base64, re
 
 # 项目根目录（其下含 beidou/{wutan,engineering}/{data,html}）。
 # 三级回退，顺序：环境变量 BEIDOU_WORK > --base > 从脚本位置自动上溯。
@@ -44,6 +44,84 @@ _HERO_CANDIDATES = (
 )
 HERO_BLEED = "16px"          # 与 body 左右 padding 一致 → 背景正好贴到视口边
 HERO_FADE = (("0%", ".78"), ("46%", ".38"), ("100%", ".03"),)
+
+# ===== 五要素预警阈值（2026-10-09 用户定；降水/降雪=mm/h 小时级，阵风 m/s，温度 ℃）=====
+# 文本严格按用户口径；原字典笔误已修正：阵风 0 级「阵风阵风」→「阵风正常」；
+# 高温 40 度原误写成 key=2（与 37 度重复），更正为 key=3。
+RAIN_ALERT  = {0: "降雨正常", 1: "小雨预警(0.2mm/h)", 2: "中雨预警(1.5mm/h)",
+               3: "大雨预警(3mm/h)", 4: "暴雨预警(6mm/h)", 5: "大暴雨预警(15mm/h)"}
+SNOW_ALERT  = {0: "正常", 1: "小雪预警(>0.1mm/h)", 2: "中雪预警(>0.5mm/h)",
+               3: "大雪预警(>1mm/h)", 4: "暴雪预警(>2mm/h)"}
+GUST_ALERT  = {0: "阵风正常", 1: "劲风五级预警(8.0m/s)", 2: "强风六级预警(10.8m/s)",
+               3: "疾风七级预警(13.9m/s)", 4: "大风八级预警(17.2m/s)"}
+THIGH_ALERT = {0: "温度正常", 1: "35度高温预警（35度）", 2: "37度酷热预警（37度）",
+               3: "40度极端高温预警（40度）"}
+TLOW_ALERT  = {0: "温度正常", 1: "零下5度寒冷预警（零下5度）",
+               2: "零下15度严寒预警（零下15度）", 3: "零下25度极寒预警（零下25度）"}
+# index 卡片专用：只留等级名，去掉 6mm/h、13.9m/s、35度 这类阈值数字
+RAIN_ALERT_S  = {0: "降雨正常", 1: "小雨预警", 2: "中雨预警",
+               3: "大雨预警", 4: "暴雨预警", 5: "大暴雨预警"}
+SNOW_ALERT_S  = {0: "正常", 1: "小雪预警", 2: "中雪预警",
+               3: "大雪预警", 4: "暴雪预警"}
+GUST_ALERT_S  = {0: "阵风正常", 1: "劲风五级预警", 2: "强风六级预警",
+               3: "疾风七级预警", 4: "大风八级预警"}
+THIGH_ALERT_S = {0: "温度正常", 1: "高温预警", 2: "酷热预警", 3: "极端高温预警"}
+TLOW_ALERT_S  = {0: "温度正常", 1: "寒冷预警", 2: "严寒预警", 3: "极寒预警"}
+
+def rain_alert(mmh):
+    if mmh is None: return 0
+    if mmh >= 15: return 5
+    if mmh >= 6:  return 4
+    if mmh >= 3:  return 3
+    if mmh >= 1.5: return 2
+    if mmh >= 0.2: return 1
+    return 0
+
+def snow_alert(mmh):
+    if mmh is None: return 0
+    if mmh >= 2:   return 4
+    if mmh >= 1:   return 3
+    if mmh >= 0.5: return 2
+    if mmh >= 0.1: return 1
+    return 0
+
+def gust_alert(mps):
+    if mps is None: return 0
+    if mps >= 17.2: return 4
+    if mps >= 13.9: return 3
+    if mps >= 10.8: return 2
+    if mps >= 8.0:  return 1
+    return 0
+
+def thigh_alert(t):
+    if t is None: return 0
+    if t >= 40: return 3
+    if t >= 37: return 2
+    if t >= 35: return 1
+    return 0
+
+def tlow_alert(t):
+    if t is None: return 0
+    if t <= -25: return 3
+    if t <= -15: return 2
+    if t <= -5:  return 1
+    return 0
+
+def alert_items(rain_mmh, snow_mmh, gust, tmax, tmin, verbose=True):
+    """返回触发的预警文字列表（仅 level>=1）。各要素独立判定，可同时多条。
+    verbose=False 时只给等级名称、不带任何阈值数值（index 卡片用，避免满屏数字）。"""
+    out = []
+    r = rain_alert(rain_mmh)
+    if r: out.append(RAIN_ALERT[r] if verbose else RAIN_ALERT_S[r])
+    s = snow_alert(snow_mmh)
+    if s: out.append(SNOW_ALERT[s] if verbose else SNOW_ALERT_S[s])
+    g = gust_alert(gust)
+    if g: out.append(GUST_ALERT[g] if verbose else GUST_ALERT_S[g])
+    h = thigh_alert(tmax)
+    if h: out.append(THIGH_ALERT[h] if verbose else THIGH_ALERT_S[h])
+    l = tlow_alert(tmin)
+    if l: out.append(TLOW_ALERT[l] if verbose else TLOW_ALERT_S[l])
+    return out
 
 def _find_hero():
     for p in _HERO_CANDIDATES:
@@ -180,8 +258,9 @@ def build_near_term_desc(rows, wd=NEAR_DAYS):
         cl = []
         for r in cold[:4]:
             nr = r["near"]; bits = []
-            if nr["gust"] >= 17.2: bits.append(f"阵风 {nr['gust']:.1f}m/s")
-            if nr["tmin"] <= 0: bits.append(f"最低 {nr['tmin']:.1f}℃")
+            if nr["gust"] >= 8.0: bits.append(GUST_ALERT_S[gust_alert(nr["gust"])])
+            if nr["tmin"] <= -5: bits.append(TLOW_ALERT_S[tlow_alert(nr["tmin"])])
+            elif nr["tmin"] <= 0: bits.append(TLOW_ALERT_S[1] + "（结冰/霜冻）")
             cl.append(f"{r['name']}（{'、'.join(bits)}）")
         parts.append("最需关注高原/高海拔测线大风低温——" + "、".join(cl) + "，做好防风保暖与设备加固")
     if rain:
@@ -200,44 +279,46 @@ def build_near_term_desc(rows, wd=NEAR_DAYS):
 
 def build_focus(d, is_eng=False):
     # 焦点描述按「未来 48 小时（近 2 天）」口径，与前端 t1「重点提示」及风险评级保持一致；
+    # 预警文字严格套用 2026-10-09 用户定的五要素阈值（mm/h 小时级降水/降雪、m/s 阵风、℃ 温度）。
     # 旧数据缺 peaksNear 时回退到全周期 peaks，避免中断。
-    p = d.get("peaksNear") or d.get("peaks", {}) or {}
     items = []
-    if p.get("focusTotal") and p.get("focusStart"):
-        items.append(f"{mmdd(p['focusStart'])}~{mmdd(p['focusEnd'])} 连续降雨累计 {round(p['focusTotal'],1)}mm")
-    if p.get("pMax") is not None and p.get("pMaxDay"):
-        pm = p["pMax"]; lvl = "暴雨" if pm >= 50 else ("大雨" if pm >= 25 else None)
-        if lvl:
-            items.append(f"{mmdd(p['pMaxDay'])} 单日降水 {round(pm,1)}mm（{lvl}）")
-    if p.get("tmax") is not None and p["tmax"] >= 35:
-        items.append(f"最高气温 {round(p['tmax'],1)}°C（高温）")
-    if p.get("tmin") is not None and p["tmin"] <= 0:
-        items.append(f"最低气温 {round(p['tmin'],1)}°C（结冰/霜冻）")
-    if p.get("gustMax") is not None and p["gustMax"] >= 17.2:
-        items.append(f"最大阵风 {round(p['gustMax'],1)} m/s（≥8级）")
-    if p.get("windMax") is not None and p["windMax"] >= 10.8:
-        items.append(f"最大持续风 {round(p['windMax'],1)} m/s（≥6级）")
-    if is_eng and not items:
-        # 工程数据没有 peaksNear/peaks 聚合，从 daily 前 2 天现算，保证卡片焦点不为空
-        d2 = (d.get("daily") or [])[:2]
-        if d2:
-            cum = sum(x.get("precip", 0) for x in d2)
-            gust = max((x.get("gustMax", 0) for x in d2), default=0)
-            tmin = min((x.get("tempMin", 99) for x in d2), default=99)
-            tmax = max((x.get("tempMax", -99) for x in d2), default=-99)
-            e = []
-            if cum >= 1:
-                e.append(f"累计降水 {round(cum,1)}mm")
-            if gust >= 10.8:
-                e.append(f"最大阵风 {round(gust,1)}m/s")
-            if tmin <= 0:
-                e.append(f"最低 {round(tmin,1)}℃")
-            if tmax >= 35:
-                e.append(f"最高 {round(tmax,1)}℃")
-            items = e or ["未来 2 天无明显强降雨与大风，整体适宜作业"]
+    if not is_eng:
+        p = d.get("peaksNear") or d.get("peaks", {}) or {}
+        # 累计降水优先用未来 48 小时逐小时窗口真实累计（pSum48），不用两日 focusTotal
+        if p.get("pSum48"):
+            items.append(f"未来 48 小时累计降水 {round(p['pSum48'],1)}mm")
+        # 五要素预警：降水/降雪取小时峰值(mm/h)，阵风/温度取极值
+        # index 汇总文字只报等级名（不带 mm/h、m/s、℃ 阈值数值，避免一眼全是数字）
+        items += alert_items(p.get("pHourMax"), p.get("snowMax"),
+                             p.get("gustMax"), p.get("tmax"), p.get("tmin"),
+                             verbose=False)
+    else:
+        # 工程数据：从 summary 取小时级峰值（pHourMax/snowHourMax 由 build_points_data 现算）
+        s = d.get("summary", {}) or {}
+        if s.get("pHourMax") or s.get("snowHourMax") or s.get("maxGust") or s.get("maxTemp") is not None or s.get("minTemp") is not None:
+            items += alert_items(s.get("pHourMax"), s.get("snowHourMax"),
+                                 s.get("maxGust"), s.get("maxTemp"), s.get("minTemp"))
+        if not items:
+            # 兜底：缺 summary 时用 daily 前 2 天现算
+            d2 = (d.get("daily") or [])[:2]
+            if d2:
+                cum = sum(x.get("precip", 0) for x in d2)
+                gust = max((x.get("gustMax", 0) for x in d2), default=0)
+                tmin = min((x.get("tempMin", 99) for x in d2), default=99)
+                tmax = max((x.get("tempMax", -99) for x in d2), default=-99)
+                e = []
+                if cum >= 1:
+                    e.append(f"累计降水 {round(cum,1)}mm")
+                if gust >= 8.0:
+                    e.append(GUST_ALERT[gust_alert(gust)])
+                if tmin <= -5:
+                    e.append(TLOW_ALERT[tlow_alert(tmin)])
+                if tmax >= 35:
+                    e.append(THIGH_ALERT[thigh_alert(tmax)])
+                items = e or ["未来 2 天无明显强降雨与大风，整体适宜作业"]
     if not items:
         return "本期未触发极端天气预警阈值，整体适宜作业"
-    return "；".join(items[:3])
+    return "；".join(items[:4])
 
 def sev_eng_recent(daily2):
     """石油工程数据的风险等级（近 2 天口径）。

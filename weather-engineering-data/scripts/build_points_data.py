@@ -170,16 +170,86 @@ def main():
     def var(loc, key):
         return [float(v) if isinstance(v, (int, float)) else 0.0 for v in loc["hourly"][key]]
 
-    def ptype_of(liq, snow, pr):
-        """降水类型码：0=无 1=降雨 2=降雪 3=雨夹雪（snowfall 单位 cm，仅以 >0 判有无）"""
+    def ptype_of(liq, snow, pr, temp=None):
+        """降水类型码：0=无 1=降雨 2=降雪 3=雨夹雪（snowfall 单位 cm，仅以 >0 判有无）
+        温度规则（2026-10-08 起）：气温 < 0℃ 一律判「降雪」（液态分量不参与判型）；
+        只有气温 ≥ 0℃ 时才可能出现「雨夹雪」（雨雪同现）。temp=None 时退化为纯分量判定。"""
         has_l, has_s = liq > 0.05, snow > 0.01
+        if temp is not None and temp < 0.0:
+            return 2 if (has_l or has_s or pr > 0.05) else 0
         if has_l and has_s: return 3
         if has_s: return 2
         if has_l: return 1
         return 1 if pr > 0.05 else 0
 
+    # ===== 五要素预警阈值（2026-10-09 用户定；降水/降雪=mm/h 小时级，阵风 m/s，温度 ℃）=====
+    RAIN_ALERT  = {0: "降雨正常", 1: "小雨预警(0.2mm/h)", 2: "中雨预警(1.5mm/h)",
+                   3: "大雨预警(3mm/h)", 4: "暴雨预警(6mm/h)", 5: "大暴雨预警(15mm/h)"}
+    SNOW_ALERT  = {0: "正常", 1: "小雪预警(>0.1mm/h)", 2: "中雪预警(>0.5mm/h)",
+                   3: "大雪预警(>1mm/h)", 4: "暴雪预警(>2mm/h)"}
+    GUST_ALERT  = {0: "阵风正常", 1: "劲风五级预警(8.0m/s)", 2: "强风六级预警(10.8m/s)",
+                   3: "疾风七级预警(13.9m/s)", 4: "大风八级预警(17.2m/s)"}
+    THIGH_ALERT = {0: "温度正常", 1: "35度高温预警（35度）", 2: "37度酷热预警（37度）",
+                   3: "40度极端高温预警（40度）"}
+    TLOW_ALERT  = {0: "温度正常", 1: "零下5度寒冷预警（零下5度）",
+                   2: "零下15度严寒预警（零下15度）", 3: "零下25度极寒预警（零下25度）"}
+
+    def rain_alert(mmh):
+        if mmh is None: return 0
+        if mmh >= 15: return 5
+        if mmh >= 6:  return 4
+        if mmh >= 3:  return 3
+        if mmh >= 1.5: return 2
+        if mmh >= 0.2: return 1
+        return 0
+
+    def snow_alert(mmh):
+        if mmh is None: return 0
+        if mmh >= 2:   return 4
+        if mmh >= 1:   return 3
+        if mmh >= 0.5: return 2
+        if mmh >= 0.1: return 1
+        return 0
+
+    def gust_alert(mps):
+        if mps is None: return 0
+        if mps >= 17.2: return 4
+        if mps >= 13.9: return 3
+        if mps >= 10.8: return 2
+        if mps >= 8.0:  return 1
+        return 0
+
+    def thigh_alert(t):
+        if t is None: return 0
+        if t >= 40: return 3
+        if t >= 37: return 2
+        if t >= 35: return 1
+        return 0
+
+    def tlow_alert(t):
+        if t is None: return 0
+        if t <= -25: return 3
+        if t <= -15: return 2
+        if t <= -5:  return 1
+        return 0
+
+    def alert_items(rain_mmh, snow_mmh, gust, tmax, tmin):
+        out = []
+        r = rain_alert(rain_mmh)
+        if r: out.append(RAIN_ALERT[r])
+        s = snow_alert(snow_mmh)
+        if s: out.append(SNOW_ALERT[s])
+        g = gust_alert(gust)
+        if g: out.append(GUST_ALERT[g])
+        h = thigh_alert(tmax)
+        if h: out.append(THIGH_ALERT[h])
+        l = tlow_alert(tmin)
+        if l: out.append(TLOW_ALERT[l])
+        return out
+
     def daily_for(series_t, series_p, series_l, series_s, series_w, series_g):
         tMinD, tMaxD, pD, lD, sD, wD, gD = {}, {}, {}, {}, {}, {}, {}
+        pTempD = {}   # 当日「有降水时段」的最高气温，用于按温度判降水类型
         for t, tv, pv, lv, sv, wv, gv in zip(times, series_t, series_p, series_l,
                                              series_s, series_w, series_g):
             d = t[:10]
@@ -188,6 +258,8 @@ def main():
             pD[d] = pD.get(d, 0.0) + max(pv, 0.0)
             lD[d] = lD.get(d, 0.0) + max(lv, 0.0)      # 每日降雨（rain+showers）
             sD[d] = sD.get(d, 0.0) + max(sv, 0.0)      # 每日降雪（cm）
+            if pv > 0.05 or lv > 0.05 or sv > 0.01:    # 该时有降水 → 记录气温（取最高）
+                pTempD[d] = max(pTempD.get(d, -999.0), tv)
             wD.setdefault(d, []).append(wv)
             gD.setdefault(d, []).append(gv)
         return [
@@ -197,7 +269,8 @@ def main():
              "precip": round(pD.get(d, 0.0), 1),
              "liquid": round(lD.get(d, 0.0), 1),
              "snow": round(sD.get(d, 0.0), 1),
-             "ptype": ptype_of(lD.get(d, 0.0), sD.get(d, 0.0), pD.get(d, 0.0)),
+             "ptype": ptype_of(lD.get(d, 0.0), sD.get(d, 0.0), pD.get(d, 0.0),
+                               pTempD.get(d)),
              "windMax": round(max(wD[d]), 1),
              "gustMax": round(max(gD[d]), 1)}
             for d in dailyDates
@@ -226,6 +299,9 @@ def main():
             "minTemp": round(min(t), 1),
             "maxTemp": round(max(t), 1),
             "maxPrecipDay": max(daily, key=lambda x: x["precip"])["date"] if daily else None,
+            # 小时级峰值（mm/h）：供 index/summary 套用 2026-10-09 用户定的五要素阈值
+            "pHourMax": round(max(pr), 2),                 # 逐小时降水峰值 mm/h
+            "snowHourMax": round(max(sn) * 10.0, 2),       # 逐小时降雪峰值 cm/h → mm/h
         }
         # 拼音文件名（本次运行内去重）
         base_slug = slug(p["name"])
@@ -257,7 +333,7 @@ def main():
                 "showers": [round(v, 1) for v in sh],
                 "snowfall": [round(v, 1) for v in sn],
                 "liquid": [round(v, 1) for v in liq],
-                "ptype": [ptype_of(l, s, p) for l, s, p in zip(liq, sn, pr)],
+                "ptype": [ptype_of(l, s, p, tv) for l, s, p, tv in zip(liq, sn, pr, t)],
                 "wind_speed_10m": [round(v, 1) for v in w],
                 "wind_gusts_10m": [round(v, 1) for v in g],
             },

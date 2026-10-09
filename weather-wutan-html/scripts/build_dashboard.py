@@ -550,8 +550,12 @@ else:
                       zip(per["rain"][p], per["showers"][p])] for p in range(len(locs))]
 
     # 降水类型码：0=无 / 1=降雨 / 2=降雪 / 3=雨夹雪（图表柱内图标用）
-    def ptype_of(liquid, snow, precip=0.0):
+    # 温度规则（2026-10-08 起）：气温 < 0℃ 一律判「降雪」（液态分量不参与判型）；
+    # 只有气温 ≥ 0℃ 时才可能出现「雨夹雪」（雨雪同现）。temp=None 时退化为纯分量判定。
+    def ptype_of(liquid, snow, precip=0.0, temp=None):
         has_l, has_s = liquid > 0.05, snow > 0.01
+        if temp is not None and temp < 0.0:
+            return 2 if (has_l or has_s or precip > 0.05) else 0
         if has_l and has_s: return 3
         if has_s: return 2
         if has_l: return 1
@@ -559,8 +563,77 @@ else:
         return 1 if precip > 0.05 else 0
 
     per["ptype"] = [[ptype_of(per["liquid"][p][t], per["snowfall"][p][t],
-                              per["precipitation"][p][t]) for t in range(n)]
+                              per["precipitation"][p][t], per["temperature_2m"][p][t])
+                     for t in range(n)]
                     for p in range(len(locs))]
+
+    # ===== 五要素预警阈值（2026-10-09 用户定；降水/降雪=mm/h 小时级，阵风 m/s，温度 ℃）=====
+    # 文本严格按用户口径；原字典笔误已修正：阵风 0 级「阵风阵风」→「阵风正常」；
+    # 高温 40 度原误写成 key=2（与 37 度重复），更正为 key=3。
+    RAIN_ALERT  = {0: "降雨正常", 1: "小雨预警(0.2mm/h)", 2: "中雨预警(1.5mm/h)",
+                   3: "大雨预警(3mm/h)", 4: "暴雨预警(6mm/h)", 5: "大暴雨预警(15mm/h)"}
+    SNOW_ALERT  = {0: "正常", 1: "小雪预警(>0.1mm/h)", 2: "中雪预警(>0.5mm/h)",
+                   3: "大雪预警(>1mm/h)", 4: "暴雪预警(>2mm/h)"}
+    GUST_ALERT  = {0: "阵风正常", 1: "劲风五级预警(8.0m/s)", 2: "强风六级预警(10.8m/s)",
+                   3: "疾风七级预警(13.9m/s)", 4: "大风八级预警(17.2m/s)"}
+    THIGH_ALERT = {0: "温度正常", 1: "35度高温预警（35度）", 2: "37度酷热预警（37度）",
+                   3: "40度极端高温预警（40度）"}
+    TLOW_ALERT  = {0: "温度正常", 1: "零下5度寒冷预警（零下5度）",
+                   2: "零下15度严寒预警（零下15度）", 3: "零下25度极寒预警（零下25度）"}
+
+    def rain_alert(mmh):
+        if mmh is None: return 0
+        if mmh >= 15: return 5
+        if mmh >= 6:  return 4
+        if mmh >= 3:  return 3
+        if mmh >= 1.5: return 2
+        if mmh >= 0.2: return 1
+        return 0
+
+    def snow_alert(mmh):
+        if mmh is None: return 0
+        if mmh >= 2:   return 4
+        if mmh >= 1:   return 3
+        if mmh >= 0.5: return 2
+        if mmh >= 0.1: return 1
+        return 0
+
+    def gust_alert(mps):
+        if mps is None: return 0
+        if mps >= 17.2: return 4
+        if mps >= 13.9: return 3
+        if mps >= 10.8: return 2
+        if mps >= 8.0:  return 1
+        return 0
+
+    def thigh_alert(t):
+        if t is None: return 0
+        if t >= 40: return 3
+        if t >= 37: return 2
+        if t >= 35: return 1
+        return 0
+
+    def tlow_alert(t):
+        if t is None: return 0
+        if t <= -25: return 3
+        if t <= -15: return 2
+        if t <= -5:  return 1
+        return 0
+
+    def alert_items(rain_mmh, snow_mmh, gust, tmax, tmin):
+        """返回触发的预警文字列表（仅 level>=1）。各要素独立判定，可同时多条。"""
+        out = []
+        r = rain_alert(rain_mmh)
+        if r: out.append(RAIN_ALERT[r])
+        s = snow_alert(snow_mmh)
+        if s: out.append(SNOW_ALERT[s])
+        g = gust_alert(gust)
+        if g: out.append(GUST_ALERT[g])
+        h = thigh_alert(tmax)
+        if h: out.append(THIGH_ALERT[h])
+        l = tlow_alert(tmin)
+        if l: out.append(TLOW_ALERT[l])
+        return out
 
     # 区域逐时包络
     def envelope(arrs, agg):
@@ -586,13 +659,17 @@ else:
         gmax = max(per["wind_gusts_10m"][p]); wmax = max(per["wind_speed_10m"][p])
         pmax_day = max(daily, key=lambda x: x[1])[0] if daily else None
         pmax = max((v for _, v in daily), default=0)
+        # 降雪小时峰值（cm/h → mm/h）：×10；供 index 焦点按「降雪预警」阈值判定
+        snow_max_mmh = max(per["snowfall"][p]) * 10.0
         peaks_per_point.append(dict(tmax=tmax, tmin=tmin, gustMax=gmax, windMax=wmax,
-                                    pMax=round(pmax, 1), pMaxDay=pmax_day))
+                                    pMax=round(pmax, 1), pMaxDay=pmax_day,
+                                    snowMax=round(snow_max_mmh, 2)))
 
     # 每点逐日序列（交互式「逐要素查询」用）
     dailyDates = sorted({t[:10] for t in times})
     def point_daily(p):
         tMinD, tMaxD, pD, lD, sD, wD, gD = {}, {}, {}, {}, {}, {}, {}
+        pTempD = {}   # 当日「有降水时段」的最高气温，用于按温度判降水类型
         for t, tv, pv, lv, sv, wv, gv in zip(times,
                 per["temperature_2m"][p], per["precipitation"][p], per["liquid"][p],
                 per["snowfall"][p], per["wind_speed_10m"][p], per["wind_gusts_10m"][p]):
@@ -602,14 +679,17 @@ else:
             pD[d] = pD.get(d, 0.0) + max(pv, 0.0)
             lD[d] = lD.get(d, 0.0) + max(lv, 0.0)          # 每日降雨合计（rain+showers）
             sD[d] = sD.get(d, 0.0) + max(sv, 0.0)          # 每日降雪合计（cm）
+            if pv > 0.05 or lv > 0.05 or sv > 0.01:        # 该时有降水 → 记录气温（取最高）
+                pTempD[d] = max(pTempD.get(d, -999.0), tv)
             (wD.setdefault(d, [])).append(wv)
             (gD.setdefault(d, [])).append(gv)
         return {
             "tempMin": [round(min(tMinD[d]), 1) for d in dailyDates],
             "tempMax": [round(max(tMaxD[d]), 1) for d in dailyDates],
             "precip":  [round(pD.get(d, 0.0), 1) for d in dailyDates],
-            # 每日降水类型（柱内图标）：以当日累计 liquid / snowfall 判定
-            "ptype":   [ptype_of(lD.get(d, 0.0), sD.get(d, 0.0), pD.get(d, 0.0))
+            # 每日降水类型（柱内图标）：以当日累计 liquid / snowfall + 降水时段气温判定
+            "ptype":   [ptype_of(lD.get(d, 0.0), sD.get(d, 0.0), pD.get(d, 0.0),
+                                 pTempD.get(d))
                         for d in dailyDates],
             "liquid":  [round(lD.get(d, 0.0), 1) for d in dailyDates],
             "snow":    [round(sD.get(d, 0.0), 1) for d in dailyDates],
@@ -636,6 +716,7 @@ else:
         "gustMax": max(pp["gustMax"] for pp in peaks_per_point),
         "windMax": max(pp["windMax"] for pp in peaks_per_point),
         "pHourMax": max(envelope(per["precipitation"], max)),
+        "snowMax": max(pp["snowMax"] for pp in peaks_per_point),
         "pMaxDay": peak["date"] if peak else None,
         "pMax": peak["p"] if peak else 0,
         "focusTotal": focus_total,
@@ -660,8 +741,16 @@ else:
         "tmin": round(min((min(ps["tempMin"][:n2]) for ps in point_series), default=0), 1),
         "gustMax": round(max((max(ps["gustMax"][:n2]) for ps in point_series), default=0), 1),
         "windMax": round(max((max(ps["windMax"][:n2]) for ps in point_series), default=0), 1),
+        # 近窗口小时级峰值：降水/降雪取未来 48h 内各点逐时最大值（mm/h）
+        "pHourMax": round(max((max(per["precipitation"][p][:HOURS_48]) for p in range(len(locs))), default=0), 2),
+        "snowMax": round(max((max(per["snowfall"][p][:HOURS_48]) for p in range(len(locs))), default=0) * 10.0, 2),
         "pMax": round(near_peak["p"], 1) if near_peak else 0,
         "pMaxDay": near_peak["date"] if near_peak else None,
+        # 未来 48 小时真实累计：逐小时窗口（起始小时起 48 个小时）之和，
+        # 不用「两个自然日之和」——当日已过去大半，两日累计会明显偏大。
+        "pSum48": round(sum(precip_max[:HOURS_48]), 1),
+        "h48Start": times[0] if len(times) >= 1 else None,
+        "h48End": times[HOURS_48 - 1] if len(times) >= HOURS_48 else None,
         "focusTotal": round(sum(x["p"] for x in near_focus), 1),
         "focusStart": near_focus[0]["date"] if near_focus else None,
         "focusEnd": near_focus[-1]["date"] if near_focus else None,
@@ -1676,11 +1765,10 @@ document.getElementById("metaLine").textContent = DATA.meta.kind === "points"
   if(PN.gustMax>=17.2) th.push(`最大阵风 ${PN.gustMax} m/s（≥8级）`);
   if(PN.tmax>=35) th.push(`最高气温 ${PN.tmax}°C（高温）`);
   if(PN.tmin<=0) th.push(`最低气温 ${PN.tmin}°C（结冰/霜冻）`);
-  if(PN.pMax>=50) th.push(`${PN.pMaxDay.slice(5)} 单日降水 ${PN.pMax}mm（暴雨）`);
-  else if(PN.pMax>=25) th.push(`${PN.pMaxDay.slice(5)} 单日降水 ${PN.pMax}mm（大雨）`);
-  if(PN.focusStart) th.push(`${PN.focusStart.slice(5)}~${PN.focusEnd.slice(5)} 连续降雨累计 ${PN.focusTotal}mm`);
+  // 累计降水用「未来 48 小时」逐小时窗口真实累计（PN.pSum48），不用两个自然日之和
+  if(PN.pSum48) th.push(`未来 48 小时累计降水 ${PN.pSum48}mm`);
   let desc = th.length
-    ? ("近 48 小时主要关注：" + th.join("；") + `。图中共 ${nRisk} 个作业点存在降雨/大风风险，建议据此调整野外作业安排。`)
+    ? ("近 48 小时主要关注：" + th.join("；") + `。共 ${nRisk} 个作业点存在降雨/大风风险，建议据此调整野外作业安排。`)
     : "近 48 小时未触发极端天气预警阈值，整体有利于野外作业。";
   if(FARALERT.has) desc += ` 远期（第 3~14 天）另有 ${FARALERT.text}，已超出可靠预报窗口，临近时再提示。`;
   const box=document.getElementById("alertBox");

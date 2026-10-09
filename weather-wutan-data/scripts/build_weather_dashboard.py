@@ -63,15 +63,18 @@ rain = col("rain"); wind = col("wind_speed_10m"); gust = col("wind_gusts_10m")
 showers = col("showers"); snowfall = col("snowfall")
 liquid = [round(r + s, 2) for r, s in zip(rain, showers)]     # 降雨 = 雨 + 阵雨
 
-def ptype_of(liq, snow, pr):
-    """降水类型码：0=无 1=降雨 2=降雪 3=雨夹雪（snowfall 单位 cm，仅以 >0 判有无）"""
+def ptype_of(liq, snow, pr, temp=None):
+    """降水类型码：0=无 1=降雨 2=降雪 3=雨夹雪（snowfall 单位 cm，仅以 >0 判有无）
+    温度规则（2026-10-08 起）：temp < 0℃ 一律判降雪；temp ≥ 0℃ 且雨雪同现才判雨夹雪。"""
     has_l, has_s = liq > 0.05, snow > 0.01
+    if temp is not None and temp < 0.0:
+        return 2 if (has_l or has_s or pr > 0.05) else 0
     if has_l and has_s: return 3
     if has_s: return 2
     if has_l: return 1
     return 1 if pr > 0.05 else 0
 
-ptype = [ptype_of(l, s, p) for l, s, p in zip(liquid, snowfall, precip)]
+ptype = [ptype_of(l, s, p, tv) for l, s, p, tv in zip(liquid, snowfall, precip, temp)]
 print(f"Got {len(times)} hourly rows")
 
 # 日降水聚合

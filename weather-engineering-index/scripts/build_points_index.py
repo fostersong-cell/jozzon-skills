@@ -91,6 +91,81 @@ def hero_css(bleed=HERO_BLEED):
 SEV_LABEL = {0: "整体适宜", 1: "需关注", 2: "重点关注", 3: "高度警惕"}
 SEV_COLOR = {0: "#2E8B57", 1: "#E0A92C", 2: "#E0822C", 3: "#C0392B"}
 
+# ===== 五要素预警阈值（2026-10-09 用户定；降水/降雪=mm/h 小时级，阵风 m/s，温度 ℃）=====
+RAIN_ALERT  = {0: "降雨正常", 1: "小雨预警(0.2mm/h)", 2: "中雨预警(1.5mm/h)",
+               3: "大雨预警(3mm/h)", 4: "暴雨预警(6mm/h)", 5: "大暴雨预警(15mm/h)"}
+SNOW_ALERT  = {0: "正常", 1: "小雪预警(>0.1mm/h)", 2: "中雪预警(>0.5mm/h)",
+               3: "大雪预警(>1mm/h)", 4: "暴雪预警(>2mm/h)"}
+GUST_ALERT  = {0: "阵风正常", 1: "劲风五级预警(8.0m/s)", 2: "强风六级预警(10.8m/s)",
+               3: "疾风七级预警(13.9m/s)", 4: "大风八级预警(17.2m/s)"}
+THIGH_ALERT = {0: "温度正常", 1: "35度高温预警（35度）", 2: "37度酷热预警（37度）",
+               3: "40度极端高温预警（40度）"}
+TLOW_ALERT  = {0: "温度正常", 1: "零下5度寒冷预警（零下5度）",
+               2: "零下15度严寒预警（零下15度）", 3: "零下25度极寒预警（零下25度）"}
+# index 卡片专用：只留等级名，去掉 6mm/h、13.9m/s、35度 这类阈值数字
+RAIN_ALERT_S  = {0: "降雨正常", 1: "小雨预警", 2: "中雨预警",
+               3: "大雨预警", 4: "暴雨预警", 5: "大暴雨预警"}
+SNOW_ALERT_S  = {0: "正常", 1: "小雪预警", 2: "中雪预警",
+               3: "大雪预警", 4: "暴雪预警"}
+GUST_ALERT_S  = {0: "阵风正常", 1: "劲风五级预警", 2: "强风六级预警",
+               3: "疾风七级预警", 4: "大风八级预警"}
+THIGH_ALERT_S = {0: "温度正常", 1: "高温预警", 2: "酷热预警", 3: "极端高温预警"}
+TLOW_ALERT_S  = {0: "温度正常", 1: "寒冷预警", 2: "严寒预警", 3: "极寒预警"}
+
+def rain_alert(mmh):
+    if mmh is None: return 0
+    if mmh >= 15: return 5
+    if mmh >= 6:  return 4
+    if mmh >= 3:  return 3
+    if mmh >= 1.5: return 2
+    if mmh >= 0.2: return 1
+    return 0
+
+def snow_alert(mmh):
+    if mmh is None: return 0
+    if mmh >= 2:   return 4
+    if mmh >= 1:   return 3
+    if mmh >= 0.5: return 2
+    if mmh >= 0.1: return 1
+    return 0
+
+def gust_alert(mps):
+    if mps is None: return 0
+    if mps >= 17.2: return 4
+    if mps >= 13.9: return 3
+    if mps >= 10.8: return 2
+    if mps >= 8.0:  return 1
+    return 0
+
+def thigh_alert(t):
+    if t is None: return 0
+    if t >= 40: return 3
+    if t >= 37: return 2
+    if t >= 35: return 1
+    return 0
+
+def tlow_alert(t):
+    if t is None: return 0
+    if t <= -25: return 3
+    if t <= -15: return 2
+    if t <= -5:  return 1
+    return 0
+
+def alert_items(rain_mmh, snow_mmh, gust, tmax, tmin, verbose=True):
+    """各要素独立判定，可同时多条。verbose=False 只给等级名、不带阈值数字。"""
+    out = []
+    r = rain_alert(rain_mmh)
+    if r: out.append(RAIN_ALERT[r] if verbose else RAIN_ALERT_S[r])
+    s = snow_alert(snow_mmh)
+    if s: out.append(SNOW_ALERT[s] if verbose else SNOW_ALERT_S[s])
+    g = gust_alert(gust)
+    if g: out.append(GUST_ALERT[g] if verbose else GUST_ALERT_S[g])
+    h = thigh_alert(tmax)
+    if h: out.append(THIGH_ALERT[h] if verbose else THIGH_ALERT_S[h])
+    l = tlow_alert(tmin)
+    if l: out.append(TLOW_ALERT[l] if verbose else TLOW_ALERT_S[l])
+    return out
+
 # ---------- 风险等级（沿用 _sev 阈值） ----------
 def sev_of(daily, s):
     pmax = max((d["precip"] for d in daily), default=0)
@@ -102,8 +177,9 @@ def sev_of(daily, s):
     return 0
 
 
-def sev_of_recent(daily3):
+def sev_of_recent(daily3, ph=0.0):
     """未来 2 天（48 小时）风险等级：仅取 daily 前 2 天聚合，套用与 sev_of 相同阈值。
+    ph = 48h 内最大小时降水（mm/h），短时强降水须计入，否则日累计小的井位会被低估。
     远端（第 3 天起）预报不确定性大、准确性下降，不作为当前主风险提示。"""
     pmax = max((d["precip"] for d in daily3), default=0)
     gust = max((d["gustMax"] for d in daily3), default=0)
@@ -112,8 +188,8 @@ def sev_of_recent(daily3):
     tmin = min((d["tempMin"] for d in daily3), default=99)
     cum = sum(d["precip"] for d in daily3)
     if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: return 3
-    if pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: return 2
-    if pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: return 1
+    if ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: return 2
+    if ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: return 1
     return 0
 
 
@@ -212,7 +288,8 @@ def render_index(groups, counts, start_label, end_label=None, short2=None, ndays
                 f'<a class="item" href="{r["file"]}?from=index">'
                 f'<span class="lv">{r["level3"]}</span>'
                 f'<span class="nm">{r["name"]}</span>'
-                f'<span class="badge" style="background:{SEV_COLOR[r["sev2"]]}">{SEV_LABEL[r["sev2"]]}</span></a>')
+                f'<span class="badge" style="background:{SEV_COLOR[r["sev2"]]}">{SEV_LABEL[r["sev2"]]}</span></a>'
+                f'<div style="font-size:11px;color:#7b8a99;padding:0 11px 9px;margin-top:-4px">{r["focus"]}</div>')
         parts.append('</div></div>')
     parts.append('<div class="foot">数据来源 Open-Meteo · 山区小气候可能强于模式预报</div>')
     parts.append('<script async src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>')
@@ -253,10 +330,16 @@ def main():
         slug = os.path.splitext(os.path.basename(fp))[0]
         sev = sev_of(daily, s)
         daily2 = daily[:2]
-        sev2 = sev_of_recent(daily2)
+        # 48h 评级与 build_short/卡片焦点保持同一口径：纳入小时级短时降水
+        sev2 = sev_of_recent(daily2, s.get("pHourMax") or 0.0)
+        # 五要素预警焦点文字（小时级峰值 → 用户 2026-10-09 阈值）
+        focus = "；".join(alert_items(s.get("pHourMax"), s.get("snowHourMax"),
+                                     s.get("maxGust"), s.get("maxTemp"), s.get("minTemp"),
+                                     verbose=False)) or \
+                 "本期未触发极端天气预警阈值，整体适宜作业"
         recs.append({"name": m["name"], "level1": m["level1"], "level2": m["level2"],
                      "level3": m["level3"], "slug": slug, "file": slug + ".html",
-                     "sev": sev, "sev2": sev2,
+                     "sev": sev, "sev2": sev2, "focus": focus,
                      "start": m.get("start_date", ""), "end": m.get("end_date", "")})
         cum2 = sum(x.get("precip", 0) for x in daily2)
         pk2 = max(daily2, key=lambda x: x.get("precip", 0)) if daily2 else {"precip": 0, "date": ""}
@@ -266,6 +349,9 @@ def main():
             "gust": round(max(x.get("gustMax", 0) for x in daily2), 1),
             "tmax": round(max(x.get("tempMax", -99) for x in daily2), 1),
             "tmin": round(min(x.get("tempMin", 99) for x in daily2), 1),
+            # 小时级峰值（mm/h），供 build_short 套用五要素预警阈值
+            "pHourMax": s.get("pHourMax"), "snowHourMax": s.get("snowHourMax"),
+            "maxGust": s.get("maxGust"), "maxTemp": s.get("maxTemp"), "minTemp": s.get("minTemp"),
             "sev": sev2, "start": m.get("start_date", ""),
         })
 

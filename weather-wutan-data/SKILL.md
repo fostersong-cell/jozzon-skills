@@ -1,6 +1,6 @@
 ---
 name: weather-wutan-data
-description: 物探/野外项目2周天气看板生成器：输入由数据采集点构成的 KML（多个 <Placemark><Point>，如炮点/检波点），按采集点逐个从 Open-Meteo 拉取「下一整时起未来 2 周（14天）」逐小时预报（气温/降水/雨/阵雨/降雪/风速/阵风，m/s；并派生 liquid=rain+showers 与降水类型码 降雨/降雪/雨夹雪），生成关键指标 + 可点击地形图（采集点可联动展开未来2周逐要素曲线/柱状图）+ 物探作业影响建议的可交互中文 HTML（默认仅出 HTML）。兼容 KML 多边形边框（工区）与线要素（测线）。用于野外踏勘、钻井、地震勘探等项目的天气风险研判与汇报。
+description: 物探/野外项目2周天气看板生成器：输入由数据采集点构成的 KML（多个 <Placemark><Point>，如炮点/检波点），按采集点逐个从 Open-Meteo 拉取「下一整时起未来 2 周（14天）」逐小时预报（气温/降水/雨/阵雨/降雪/风速/阵风，m/s；并派生 liquid=rain+showers 与降水类型码 降雨/降雪/雨夹雪（结合气温，0℃ 以下按降雪）），生成关键指标 + 可点击地形图（采集点可联动展开未来2周逐要素曲线/柱状图）+ 物探作业影响建议的可交互中文 HTML（默认仅出 HTML）。兼容 KML 多边形边框（工区）与线要素（测线）。用于野外踏勘、钻井、地震勘探等项目的天气风险研判与汇报。
 ---
 
 ## 环境占位符（跨平台 · 首次使用请先确认）
@@ -94,7 +94,7 @@ KML 自动判断类型：
 - **CDP 连接**：启动 Chrome 加 `--remote-allow-origins=*`，端口 9333，host 优先试 `[::1]`（本机 Chrome 可能绑定 IPv6）。需先 `pkill -f remote-debugging-port` 清掉残留进程，否则端口被占。需 `websocket-client`。
 - **代理干扰**：`no_proxy=*` 绕过 localhost 代理，否则 CDP HTTP 请求会被代理拦截返回 502。
 - **要素**：Open-Meteo 免费接口无需 API key（脚本里带了一个做兼容）。`timezone=Asia/Shanghai` 保证本地时间正确，页眉不显示时区（按用户要求）。
-- **降水字段与类型码（2026-09-21 扩充）**：`HOURLY` 取 `temperature_2m,precipitation,rain,showers,snowfall,wind_speed_10m,wind_gusts_10m`。语义：`precipitation`＝总降水(mm，含液态与降雪水当量)、`rain`＝雨(mm，**不含阵雨**)、`showers`＝阵雨(mm)、`snowfall`＝降雪(**cm**，与 mm 不同量纲，仅用于「有无降雪」判定)。**`liquid = rain + showers` 是「降雨」的规范口径**（两者单位同为 mm 可直接相加）。派生类型码 `0=无 / 1=降雨 / 2=降雪 / 3=雨夹雪`（`ptype_of(liq, snow, pr)`：has_l= liq>0.05、has_s= snow>0.01；两者兼有→3，仅雪→2，仅液→1，兜底总量>0.05→1）。两个脚本都已写入输出：`build_weather_dashboard.py` 的 `payload.hourly.{rain,showers,snowfall,liquid,ptype}`；`build_region_dashboard.py` 的 `per["liquid"]/per["ptype"]` 与逐日 `point_daily()["ptype"/"liquid"/"snow"]`。看板柱子类型图标由 `weather-wutan-html` skill 渲染。
+- **降水字段与类型码（2026-09-21 扩充）**：`HOURLY` 取 `temperature_2m,precipitation,rain,showers,snowfall,wind_speed_10m,wind_gusts_10m`。语义：`precipitation`＝总降水(mm，含液态与降雪水当量)、`rain`＝雨(mm，**不含阵雨**)、`showers`＝阵雨(mm)、`snowfall`＝降雪(**cm**，与 mm 不同量纲，仅用于「有无降雪」判定)。**`liquid = rain + showers` 是「降雨」的规范口径**（两者单位同为 mm 可直接相加）。派生类型码 `0=无 / 1=降雨 / 2=降雪 / 3=雨夹雪`（`ptype_of(liq, snow, pr, temp)`：has_l= liq>0.05、has_s= snow>0.01；**温度优先——`temp < 0℃` 一律判 2（降雪），只有 `temp ≥ 0℃` 才可能判 3（雨夹雪）**；否则两者兼有→3，仅雪→2，仅液→1，兜底总量>0.05→1。逐时传该小时气温，逐日传「当日有降水时段最高气温」；2026-10-08 起）。两个脚本都已写入输出：`build_weather_dashboard.py` 的 `payload.hourly.{rain,showers,snowfall,liquid,ptype}`；`build_region_dashboard.py` 的 `per["liquid"]/per["ptype"]` 与逐日 `point_daily()["ptype"/"liquid"/"snow"]`。看板柱子类型图标由 `weather-wutan-html` skill 渲染。
 - **风速单位**：`wind_speed_unit=ms`（m/s）。阈值：6级≈10.8m/s、8级≈17.2m/s。
 - **极端天气阈值**（物探参考）：高温≥35℃、低温≤0℃、小时降水≥20mm、日降水≥50mm(暴雨)/≥25mm(大雨)、阵风≥17.2m/s(8级)、持续风≥10.8m/s(6级)。连续降雨窗口取日降水≥10mm 的连续段。
 - **429 限流**：`http_get_json()` 带退避重试（5 次、指数退避）；预报 12 坐标/批、高程 60 点/批，批间 `time.sleep` 冷却。
