@@ -778,12 +778,18 @@ else:
     def _sev_of(pp):
         _ph = pp.get("pHourMax") or 0
         if pp["pMax"] >= 80 or _ph >= 20 or pp["gustMax"] >= 20.8 or pp["tmax"] >= 38 or pp["focusTotal"] >= 150:
-            return 3
-        if pp["pMax"] >= 50 or _ph >= RAIN_H["torrent"] or pp["gustMax"] >= 17.2 or pp["tmax"] >= 35 or pp["tmin"] <= -5 or pp["focusTotal"] >= 80:
-            return 2
-        if pp["pMax"] >= 25 or _ph >= RAIN_H["storm"] or pp["windMax"] >= 10.8 or pp["tmin"] <= 0 or pp["focusTotal"] >= 30:
-            return 1
-        return 0
+            sev = 3
+        elif pp["pMax"] >= 50 or _ph >= RAIN_H["torrent"] or pp["gustMax"] >= 17.2 or pp["tmax"] >= 35 or pp["tmin"] <= -5 or pp["focusTotal"] >= 80:
+            sev = 2
+        elif pp["pMax"] >= 25 or _ph >= RAIN_H["storm"] or pp["windMax"] >= 10.8 or pp["tmin"] <= 0 or pp["focusTotal"] >= 30:
+            sev = 1
+        else:
+            sev = 0
+        # 用户规则（2026-10-09）：有明显降雨（中雨及以上，即 >=1.5mm/h）即至少定为「需关注」；
+        # 降雪、阵风、高/低温仍按各自等级判定，不因这条降雨规则被额外抬级。
+        if _ph >= 1.5:
+            sev = max(sev, 1)
+        return sev
     _SEV_LABELS = {0: "整体适宜", 1: "需关注", 2: "重点关注", 3: "高度警惕"}
     SEV = _sev_of(P)
     SEV_LABEL = _SEV_LABELS[SEV]

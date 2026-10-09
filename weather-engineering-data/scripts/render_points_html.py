@@ -154,10 +154,15 @@ def sev_of_recent(daily2, ph=0.0):
     tmin = min((d["tempMin"] for d in daily2), default=99)
     cum = sum(d["precip"] for d in daily2)
     # ph = 48h 内最大小时降水（mm/h）：短时强降水须计入，否则日累计小的井位会被低估
-    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: return 3
-    if ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: return 2
-    if ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: return 1
-    return 0
+    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: sev = 3
+    elif ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: sev = 2
+    elif ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: sev = 1
+    else: sev = 0
+    # 用户规则（2026-10-09）：有明显降雨（中雨及以上，>=1.5mm/h）即至少定为「需关注」；
+    # 降雪、阵风、高/低温仍按各自等级判定，不因这条降雨规则被额外抬级。
+    if ph >= 1.5:
+        sev = max(sev, 1)
+    return sev
 
 def h48_precip(hourly48):
     """未来 48 小时（起始小时起连续 48 个逐小时）累计降水 mm。

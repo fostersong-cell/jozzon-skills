@@ -23,7 +23,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 try:
     if _HERE not in sys.path:
         sys.path.insert(0, _HERE)
-    from gen_points_summary import build_short, gongqu
+    from gen_points_summary import build_short, gongqu, peaks_48h
 except Exception:
     build_short = None
 
@@ -151,19 +151,22 @@ def tlow_alert(t):
     if t <= -5:  return 1
     return 0
 
-def alert_items(rain_mmh, snow_mmh, gust, tmax, tmin, verbose=True):
-    """各要素独立判定，可同时多条。verbose=False 只给等级名、不带阈值数字。"""
+def alert_items(rain_mmh, snow_mmh, gust, tmax, tmin, verbose=True, min_lv=1):
+    """各要素独立判定，可同时多条。verbose=False 只给等级名、不带阈值数字。
+    min_lv：只保留等级 >= min_lv 的要素，默认 1 = 低等级要素（小雨、五级风等）照常写出，
+    因为它们是客观事实；用户澄清（2026-10-09）这些低等级**不写反而丢失信息**，
+    只是它们**不足以抬高风险等级**——抬级只看「中雨及以上」或「任一 3 级预警」。"""
     out = []
     r = rain_alert(rain_mmh)
-    if r: out.append(RAIN_ALERT[r] if verbose else RAIN_ALERT_S[r])
+    if r >= min_lv: out.append(RAIN_ALERT[r] if verbose else RAIN_ALERT_S[r])
     s = snow_alert(snow_mmh)
-    if s: out.append(SNOW_ALERT[s] if verbose else SNOW_ALERT_S[s])
+    if s >= min_lv: out.append(SNOW_ALERT[s] if verbose else SNOW_ALERT_S[s])
     g = gust_alert(gust)
-    if g: out.append(GUST_ALERT[g] if verbose else GUST_ALERT_S[g])
+    if g >= min_lv: out.append(GUST_ALERT[g] if verbose else GUST_ALERT_S[g])
     h = thigh_alert(tmax)
-    if h: out.append(THIGH_ALERT[h] if verbose else THIGH_ALERT_S[h])
+    if h >= min_lv: out.append(THIGH_ALERT[h] if verbose else THIGH_ALERT_S[h])
     l = tlow_alert(tmin)
-    if l: out.append(TLOW_ALERT[l] if verbose else TLOW_ALERT_S[l])
+    if l >= min_lv: out.append(TLOW_ALERT[l] if verbose else TLOW_ALERT_S[l])
     return out
 
 # ---------- 风险等级（沿用 _sev 阈值） ----------
@@ -187,10 +190,15 @@ def sev_of_recent(daily3, ph=0.0):
     tmax = max((d["tempMax"] for d in daily3), default=99)
     tmin = min((d["tempMin"] for d in daily3), default=99)
     cum = sum(d["precip"] for d in daily3)
-    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: return 3
-    if ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: return 2
-    if ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: return 1
-    return 0
+    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: sev = 3
+    elif ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: sev = 2
+    elif ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: sev = 1
+    else: sev = 0
+    # 用户规则（2026-10-09）：有明显降雨（中雨及以上，>=1.5mm/h）即至少定为「需关注」；
+    # 降雪、阵风、高/低温仍按各自等级判定，不因这条降雨规则被额外抬级。
+    if ph >= 1.5:
+        sev = max(sev, 1)
+    return sev
 
 
 CSS = """
@@ -330,13 +338,32 @@ def main():
         slug = os.path.splitext(os.path.basename(fp))[0]
         sev = sev_of(daily, s)
         daily2 = daily[:2]
+        # 48h 峰值：从 hourly[:48] / daily[:2] 现算，绝不用整窗 summary（maxGust 等是 14 天峰值）
+        pk48 = peaks_48h(d)
         # 48h 评级与 build_short/卡片焦点保持同一口径：纳入小时级短时降水
-        sev2 = sev_of_recent(daily2, s.get("pHourMax") or 0.0)
-        # 五要素预警焦点文字（小时级峰值 → 用户 2026-10-09 阈值）
-        focus = "；".join(alert_items(s.get("pHourMax"), s.get("snowHourMax"),
-                                     s.get("maxGust"), s.get("maxTemp"), s.get("minTemp"),
-                                     verbose=False)) or \
-                 "本期未触发极端天气预警阈值，整体适宜作业"
+        sev2 = sev_of_recent(daily2, pk48.get("pHourMax") or 0.0)
+        # 五要素预警焦点文字（仅 48h 峰值 → 用户 2026-10-09 阈值）
+        # 各要素等级：用于下方「等级抬级」判定（小雨/五级风不抬级，中雨或任一3级才抬）
+        a_r = rain_alert(pk48.get("pHourMax"))
+        a_g = gust_alert(pk48.get("gust"))
+        a_max = max(a_r, snow_alert(pk48.get("snowHourMax")), a_g,
+                    thigh_alert(pk48.get("tmax")), tlow_alert(pk48.get("tmin")))
+        # 卡片照常写全各要素的客观事实——小雨、五级风等低等级要素也要写出来；
+        # 只是它们不足以抬高风险等级（等级抬级只看 中雨及以上 或任一 3 级预警）。
+        # 故此处 min_lv 保持默认 1，不做等级过滤。
+        cum48 = sum(x.get("precip", 0) for x in daily2)
+        _bits = []
+        # 用户规则（2026-10-09）：48h 累计 < 2mm 不提——量级太小，不算什么事
+        if cum48 >= 2:
+            _bits.append(f"未来 48 小时累计降水 {round(cum48,1)}mm")
+        _bits += alert_items(pk48.get("pHourMax"), pk48.get("snowHourMax"),
+                             pk48.get("gust"), pk48.get("tmax"), pk48.get("tmin"),
+                             verbose=False)
+        focus = "；".join(_bits) or "未来 2 天天气平稳"
+        # 一致性兜底：明显降雨（中雨及以上）或任一 3 级预警 → 等级至少「需关注」，
+        # 避免出现「整体适宜」却挂着「疾风七级预警」的自相矛盾
+        if (a_r >= 2 or a_max >= 3) and sev2 < 1:
+            sev2 = 1
         recs.append({"name": m["name"], "level1": m["level1"], "level2": m["level2"],
                      "level3": m["level3"], "slug": slug, "file": slug + ".html",
                      "sev": sev, "sev2": sev2, "focus": focus,
@@ -349,9 +376,9 @@ def main():
             "gust": round(max(x.get("gustMax", 0) for x in daily2), 1),
             "tmax": round(max(x.get("tempMax", -99) for x in daily2), 1),
             "tmin": round(min(x.get("tempMin", 99) for x in daily2), 1),
-            # 小时级峰值（mm/h），供 build_short 套用五要素预警阈值
-            "pHourMax": s.get("pHourMax"), "snowHourMax": s.get("snowHourMax"),
-            "maxGust": s.get("maxGust"), "maxTemp": s.get("maxTemp"), "minTemp": s.get("minTemp"),
+            # 48h 峰值（hourly[:48] / daily[:2]），供 build_short 套用五要素预警阈值（非整窗 summary）
+            "pHourMax": pk48.get("pHourMax"), "snowHourMax": pk48.get("snowHourMax"),
+            "maxGust": pk48.get("gust"), "maxTemp": pk48.get("tmax"), "minTemp": pk48.get("tmin"),
             "sev": sev2, "start": m.get("start_date", ""),
         })
 
