@@ -735,6 +735,49 @@ else:
     region_near = region_daily[:n2]
     near_focus = [x for x in region_near if x["p"] >= 10]
     near_peak = max(region_near, key=lambda x: x["p"]) if region_near else None
+    # ---- 48h 逐点归属 ------------------------------------------------------
+    # pSum48 / gustMax / tmax / tmin 都是「区域包络」（各小时取各点最大值），单看数值
+    # 无法判断是哪个作业点，用户无从查起。这里逐点反查极值归属，一并写进 peaksNear，
+    # 供单项目看板与 index 卡片点名。pSum48 是逐时包络之和（最大可跨点），
+    # 故另给「最大单点 48h 累计」作为可查证的参考值。
+    def _plabel(i):
+        if is_points:
+            return pt_names[i] if (i < len(pt_names) and pt_names[i]) else f"作业点 #{i+1}"
+        if i in center_idxs:
+            return (line_name_of[i] + " 中点") if (multi and line_name_of[i]) else ("测线中点" if is_line else "工区中心")
+        if is_line:
+            _dn = cumkm_of[i] if north_of[i] else (linekm_of[i] - cumkm_of[i])
+            return (f"{line_name_of[i]} · 距北端 {_dn:.0f}km") if (multi and line_name_of[i]) else f"距北端 {_dn:.0f}km"
+        _dx = (samples[i][0] - cx) * 111.0 * math.cos(math.radians(lat0))
+        _dy = (samples[i][1] - cy) * 111.0
+        _d = math.hypot(_dx, _dy)
+        _c = compass_dir(_dx, _dy)
+        return (_c + f"方向 · 距中心 {_d:.0f}km") if _c else f"工区中心附近 {_d:.0f}km"
+
+    _np = len(locs)
+
+    def _arg_extreme(key, want_max=True):
+        best, bi = None, -1
+        for i in range(_np):
+            v = [x for x in (per[key][i][:HOURS_48]) if isinstance(x, (int, float))]
+            if not v:
+                continue
+            m = max(v) if want_max else min(v)
+            if best is None or (m > best if want_max else m < best):
+                best, bi = m, i
+        return (round(best, 2), _plabel(bi)) if bi >= 0 else (None, None)
+
+    _g48, _gpt = _arg_extreme("wind_gusts_10m")
+    _snowpt = _arg_extreme("snowfall")[1]
+    _txpt = _arg_extreme("temperature_2m")[1]
+    _tnpt = _arg_extreme("temperature_2m", want_max=False)[1]
+    _psum_pt, _psum_pn = None, None
+    for i in range(_np):
+        _v = [x for x in (per["precipitation"][i][:HOURS_48]) if isinstance(x, (int, float))]
+        _s = sum(_v)
+        if _psum_pt is None or _s > _psum_pt:
+            _psum_pt, _psum_pn = round(_s, 1), _plabel(i)
+
     P48 = {
         "days": n2,
         # 阵风/风速/最高/最低气温：一律取未来 48h **逐小时**窗口的极值（temp_max/temp_min/
@@ -758,6 +801,11 @@ else:
         "focusTotal": round(sum(x["p"] for x in near_focus), 1),
         "focusStart": near_focus[0]["date"] if near_focus else None,
         "focusEnd": near_focus[-1]["date"] if near_focus else None,
+        # 逐点归属：这些峰值是区域包络，必须点名是哪个作业点
+        "nPoints48": _np,
+        "gustPoint": _gpt, "tmaxPoint": _txpt, "tminPoint": _tnpt,
+        "snowPoint": _snowpt,
+        "pSum48Top": _psum_pt, "pSum48Point": _psum_pn,
     }
 
     # ---- 远期（第 3 天 ~ 第 14 天）重大极端天气：只有达到"重大"量级才提示，其余以"临近时再提示"带过 ----
@@ -1778,14 +1826,19 @@ document.getElementById("metaLine").textContent = DATA.meta.kind === "points"
   const LBL2=DATA.meta.sevLabelNear||DATA.meta.sevLabel;
   document.body.classList.add("sev"+SEV);
   const nRisk = DATA.points.filter(p=>p.risk!=="ok").length;
+  const at = p => p ? `（${p}）` : "";   // 作业点归属：区域包络值必须点名，否则无从查起
   const th=[];
-  if(PN.gustMax>=17.2) th.push(`最大阵风 ${PN.gustMax} m/s（≥8级）`);
-  if(PN.tmax>=35) th.push(`最高气温 ${PN.tmax}°C（高温）`);
-  if(PN.tmin<=0) th.push(`最低气温 ${PN.tmin}°C（结冰/霜冻）`);
-  // 累计降水用「未来 48 小时」逐小时窗口真实累计（PN.pSum48），不用两个自然日之和
-  if(PN.pSum48) th.push(`未来 48 小时累计降水 ${PN.pSum48}mm`);
+  if(PN.gustMax>=17.2) th.push(`最大阵风 ${PN.gustMax} m/s（≥8级）${at(PN.gustPoint)}`);
+  if(PN.tmax>=35) th.push(`最高气温 ${PN.tmax}°C（高温）${at(PN.tmaxPoint)}`);
+  if(PN.tmin<=0) th.push(`最低气温 ${PN.tmin}°C（结冰/霜冻）${at(PN.tminPoint)}`);
+  // 累计降水用「未来 48 小时」逐小时窗口真实累计，不用两个自然日之和。
+  // 对外报「最大单点」值：PN.pSum48 是各小时取各点最大的包络之和，最大可跨点，
+  // 没有任何单个作业点能达到该值（实测藏北冻土包络 18.7mm / 最大单点仅 5.3mm），报出来会误导。
+  // 包络值仍作为风险等级的保守输入，不外露。
+  const _psum = (PN.pSum48Top!=null && PN.pSum48>0) ? PN.pSum48Top : PN.pSum48;
+  if(_psum) th.push(`未来 48 小时最大单点累计降水 ${_psum}mm${at(PN.pSum48Point)}`);
   let desc = th.length
-    ? ("近 48 小时主要关注：" + th.join("；") + `。共 ${nRisk} 个作业点存在降雨/大风风险，建议据此调整野外作业安排。`)
+    ? ("近 48 小时主要关注：" + th.join("；") + `。以上为${PN.nPoints48||DATA.points.length} 个作业点中的区域极值，已标注最不利作业点；共 ${nRisk} 个作业点存在降雨/大风风险，建议据此调整野外作业安排。`)
     : "近 48 小时未触发极端天气预警阈值，整体有利于野外作业。";
   if(FARALERT.has) desc += ` 远期（第 3~14 天）另有 ${FARALERT.text}，已超出可靠预报窗口，临近时再提示。`;
   const box=document.getElementById("alertBox");

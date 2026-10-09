@@ -422,19 +422,36 @@ def build_focus(d, is_eng=False):
     items = []
     if not is_eng:
         pk = wutan_48h(d)
-        # 用户规则（2026-10-09）：48h 累计 < 2mm 不提——量级太小，不算什么事
-        if (pk.get("pSum48") or 0) >= 2:
-            items.append(f"未来 48 小时累计降水 {round(pk['pSum48'],1)}mm")
-        # 五要素预警：降水/降雪取小时峰值(mm/h)，阵风/温度取极值（一律 48h 逐小时窗口）
-        # index 汇总文字只报等级名（不带 mm/h、m/s、℃ 阈值数值，避免一眼全是数字）
-        # 暴雪预警须以「日均降雪 48h 合计 > 0」佐证：藏北等项目的暴雪多在 3-14 天远端，
-        # peaksNear.snowMax 的逐时尖峰不可靠，不佐证则按 48h-only 规则剔除（与
-        # build_near_term_desc 的 snow48 闸门一致），避免远端暴雪污染「未来 48 小时」卡片焦点。
+        pnm = d.get("peaksNear") or {}
+        # 作业点归属：这些值是「区域包络」（各小时取各点最大），不点名用户无从查起。
+        # 低等级要素（小雨/五级风等）只写事实不点名，>=2 级才标注最不利作业点，避免卡片过长。
+        def _at(pt):
+            return f"（{pt}）" if pt else ""
+
+        if (pk.get("pSum48") or 0) >= 2 or (pnm.get("pSum48Top") or 0) >= 2:
+            # ⚠️ 用「最大单点 48h 累计」而非区域包络 pSum48 当headline 数字：
+            # pSum48 是「各小时取各点最大再累加」，最大可跨点，没有任何单个作业点真能拿到该值
+            # （实测藏北冻土 包络 18.7mm vs 最大单点仅 5.3mm，差 3.5 倍），报出来会误导。
+            # 包络 pSum48 仍作为风险等级的保守输入（不外露）。
+            _top = pnm.get("pSum48Top")
+            if _top is None:
+                items.append(f"未来 48 小时累计降水 {round(pk['pSum48'],1)}mm（区域包络）")
+            else:
+                items.append(f"未来 48 小时最大单点累计降水 {round(_top,1)}mm{_at(pnm.get('pSum48Point'))}")
+        # 暴雪须佐证：藏北等项目的暴雪多在 3-14 天远端，peaksNear.snowMax 的逐时尖峰不可靠，
+        # 须 48h 日均降雪 >0 才计入（与 build_near_term_desc 的 snow48 闸门一致）
         snow48 = sum(((x.get("snow") or 0) for x in (d.get("daily") or [])[:2]))
         snow_max = pk.get("snowMax") if snow48 > 0 else 0
-        items += alert_items(pk.get("pHourMax"), snow_max,
-                             pk.get("gust"), pk.get("tmax"), pk.get("tmin"),
-                             verbose=False)
+        _lv = [
+            (rain_alert(pk.get("pHourMax")), RAIN_ALERT_S, pnm.get("pHourPoint")),
+            (snow_alert(snow_max),                SNOW_ALERT_S, pnm.get("snowPoint")),
+            (gust_alert(pk.get("gust")),         GUST_ALERT_S, pnm.get("gustPoint")),
+            (thigh_alert(pk.get("tmax")),         THIGH_ALERT_S, pnm.get("tmaxPoint")),
+            (tlow_alert(pk.get("tmin")),          TLOW_ALERT_S, pnm.get("tminPoint")),
+        ]
+        for _lvv, _tbl, _pt in _lv:
+            if _lvv:
+                items.append(_tbl[_lvv] + (_at(_pt) if _lvv >= 2 else ""))
     else:
         # 工程数据：统一按 48h 口径现算（hourly[:48]/daily[:2]），不用整窗 summary 的 14 天峰值
         if d.get("hourly") or d.get("daily"):
