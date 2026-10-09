@@ -128,12 +128,17 @@ def peaks_48h(d):
     snow = h.get("snowfall", []) or []
     pH = round(max(precip[:n]), 2) if (n and precip) else None
     sH = round(max(snow[:n]) * 10.0, 2) if (n and snow) else None
-    # 阵风/温度用 daily 前 2 天（与 load_points 的 p['gust'] 口径一致）
+    # 48h 累计降水：必须用 hourly[:48] 逐小时之和，不能用 daily[:2] 的日累计之和——
+    # 48h 窗口从「当前整时」起算，会横跨 3 个自然日（如 10-09 13时~10-11 12时），
+    # daily[:2] 只覆盖前 2 天，漏掉第 3 天上午那段降水，会显著低估累计值。
+    # 与单项目看板 render_points_html.h48_precip() 口径完全一致。
+    pS = round(sum(v for v in precip[:n] if isinstance(v, (int, float))), 1) if n else None
     daily = (d.get("daily") or [])[:2]
     g = max((x.get("gustMax", 0) for x in daily), default=0) if daily else None
     tmax = max((x.get("tempMax", -99) for x in daily), default=-99) if daily else None
     tmin = min((x.get("tempMin", 99) for x in daily), default=99) if daily else None
-    return {"pHourMax": pH, "snowHourMax": sH, "gust": g, "tmax": tmax, "tmin": tmin}
+    return {"pHourMax": pH, "snowHourMax": sH, "pSum48": pS,
+            "gust": g, "tmax": tmax, "tmin": tmin}
 
 
 def sev_of_recent(days, ph=0.0):

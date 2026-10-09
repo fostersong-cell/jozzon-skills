@@ -330,11 +330,14 @@ def peaks_48h_eng(d):
     snow = h.get("snowfall", []) or []
     pH = round(max(precip[:n]), 2) if (n and precip) else None
     sH = round(max(snow[:n]) * 10.0, 2) if (n and snow) else None
+    # 48h 累计降水：必须 hourly[:48] 逐小时之和，不能用 daily[:2] 日累计之和（会漏掉第 3 天上午那段）
+    pS = round(sum(v for v in precip[:n] if isinstance(v, (int, float))), 1) if n else None
     daily = (d.get("daily") or [])[:2]
     g = max((x.get("gustMax", 0) for x in daily), default=0) if daily else None
     tmax = max((x.get("tempMax", -99) for x in daily), default=-99) if daily else None
     tmin = min((x.get("tempMin", 99) for x in daily), default=99) if daily else None
-    return {"pHourMax": pH, "snowHourMax": sH, "gust": g, "tmax": tmax, "tmin": tmin}
+    return {"pHourMax": pH, "snowHourMax": sH, "pSum48": pS,
+            "gust": g, "tmax": tmax, "tmin": tmin}
 
 
 def build_focus(d, is_eng=False):
@@ -365,7 +368,7 @@ def build_focus(d, is_eng=False):
         # 工程数据：统一按 48h 口径现算（hourly[:48]/daily[:2]），不用整窗 summary 的 14 天峰值
         if d.get("hourly") or d.get("daily"):
             pk = peaks_48h_eng(d)
-            cum = sum((x.get("precip") or 0) for x in (d.get("daily") or [])[:2])
+            cum = pk.get("pSum48") or 0.0
             if cum >= 2:  # 同上：< 2mm 不提
                 items.append(f"未来 48 小时累计降水 {round(cum,1)}mm")
             items += alert_items(pk.get("pHourMax"), pk.get("snowHourMax"),
