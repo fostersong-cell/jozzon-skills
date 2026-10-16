@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import sys
+import os
 """
 物探采集点/区域2周天气看板生成器 —— 区域版（可交互 HTML，默认不导 PDF）
 
@@ -42,7 +44,7 @@ ap.add_argument("--outdir", default=".", help="输出目录")
 ap.add_argument("--grid", type=float, default=6.0, help="网格间距 km，默认 6（越细采样点越多，贴合 EC 分辨率）")
 ap.add_argument("--days", type=int, default=14, help="预报天数，默认 14（未来 2 周，从下一整时起）")
 ap.add_argument("--apikey", default="6aiF2mXsB3K7YcjT")
-ap.add_argument("--chrome", default="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+ap.add_argument("--chrome", default=None, help="Chrome 可执行文件路径；未指定时按操作系统自动探测，找不到则跳过 PDF")
 ap.add_argument("--model", default="", help="Open-Meteo 模型，如 ecmwf_ifs04（ECMWF 4km 高分辨率）；留空用默认融合模型")
 ap.add_argument("--maxpts", type=int, default=150, help="采样点数量上限，超过则自动加大间隔，避免报文体量过大/接口限流")
 ap.add_argument("--no-pdf", action="store_true", help="仅生成交互式 HTML，不导出 PDF")
@@ -978,14 +980,38 @@ html = TEMPLATE.replace("__DATA__", DATA_JSON).replace("__TITLE__", f"{args.name
 try:
     from fontTools.ttLib import TTFont
     from fontTools import subset as ftsubset
-    fnt = TTFont("/System/Library/Fonts/Hiragino Sans GB.ttc", fontNumber=0)
+    _cands = []
+    if sys.platform.startswith("win") or os.name == "nt":
+        _cands = [
+            ("C:/Windows/Fonts/msyh.ttc", 0),
+            ("C:/Windows/Fonts/msyh.ttc", 1),
+            ("C:/Windows/Fonts/simsun.ttc", 0),
+            ("C:/Windows/Fonts/msjh.ttc", 0),
+            ("C:/Windows/Fonts/simhei.ttf", 0),
+        ]
+    elif sys.platform == "darwin":
+        _cands = [
+            ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+            ("/System/Library/Fonts/STHeiti Light.ttc", 0),
+            ("/System/Library/Fonts/PingFang.ttc", 0),
+        ]
+    else:
+        _cands = [
+            ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+            ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+            ("/usr/share/fonts/truetype/arphic/uming.ttc", 0),
+        ]
+    _fnt = None
+    for _fp, _fn in _cands:
+        if os.path.exists(_fp):
+            try:
+                _fnt = TTFont(_fp, fontNumber=_fn); break
+            except Exception:
+                _fnt = None
+    if _fnt is None:
+        raise RuntimeError("no CJK system font found on this platform")
+    fnt = _fnt
     chars = "".join(sorted(set(html)))
-    ss = ftsubset.Subsetter(); ss.populate(text=chars); ss.subset(fnt)
-    buf = io.BytesIO(); fnt.save(buf)
-    b64 = base64.b64encode(buf.getvalue()).decode()
-    font_css = ("@font-face{font-family:'CJKLocal';src:url('data:font/ttf;base64," + b64 + "') format('truetype');font-display:swap;}")
-    html = html.replace("/*__FONT_FACE__*/", font_css)
-    print("embedded CJK font:", len(buf.getvalue()), "bytes")
 except Exception as e:
     print("font embed FAILED:", repr(e)); html = html.replace("/*__FONT_FACE__*/", "")
 
@@ -994,49 +1020,84 @@ with open(html_path, "w", encoding="utf-8") as f:
 print("HTML written:", html_path, len(html), "bytes")
 
 # ---------- 4. Chrome CDP 窄页 PDF（可跳过） ----------
+
+def _resolve_chrome(explicit=None):
+    """返回 Chrome 可执行路径；未指定时按操作系统自动探测，找不到返回 None。"""
+    import shutil
+    if explicit and os.path.exists(explicit):
+        return explicit
+    cands = []
+    if sys.platform.startswith("win") or os.name == "nt":
+        cands = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ]
+    elif sys.platform == "darwin":
+        cands = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+    else:
+        cands = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+    for c in cands:
+        if not c:
+            continue
+        if os.path.sep in c or c.startswith("~"):
+            p = os.path.expanduser(c)
+            if os.path.exists(p):
+                return p
+        else:
+            found = shutil.which(c)
+            if found:
+                return found
+    return None
+
+
 if args.no_pdf:
     print("跳过 PDF 导出（--no-pdf），仅保留交互式 HTML")
 else:
-    import websocket
-    os.environ["no_proxy"] = "*"; os.environ["NO_PROXY"] = "*"
-    urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
-    port = 9333; profile = "<TMP>/cdp_profile_wb"
-    proc = subprocess.Popen(
-        [args.chrome, "--headless", "--disable-gpu", "--no-sandbox", "--no-first-run",
-         "--remote-allow-origins=*", f"--remote-debugging-port={port}", f"--user-data-dir={profile}"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    try:
-        time.sleep(3)
-        raw=None; host="[::1]"
-        for hh in ("[::1]","127.0.0.1","localhost"):
-            for ep in (f"http://{hh}:{port}/json/list", f"http://{hh}:{port}/json/version"):
-                try: raw=urllib.request.urlopen(ep,timeout=5).read(); host=hh; break
-                except Exception: pass
-            if raw: break
-        targets=json.loads(raw)
-        if isinstance(targets,dict): targets=[{"type":"page","webSocketDebuggerUrl":targets.get("webSocketDebuggerUrl")}]
-        ws_url=None
-        for t in targets:
-            if t.get("type")=="page" and t.get("webSocketDebuggerUrl"): ws_url=t["webSocketDebuggerUrl"]; break
-        ws=websocket.create_connection(ws_url,timeout=30)
-        def send(mid,method,params=None): ws.send(json.dumps({"id":mid,"method":method,"params":params or {}}))
-        def recv_until(mid):
-            while True:
-                m=json.loads(ws.recv())
-                if m.get("id")==mid and "result" in m: return m
-        send(1,"Page.enable")
-        file_url="file://"+urllib.parse.quote(html_path)
-        send(2,"Page.navigate",{"url":file_url}); time.sleep(4)
-        send(3,"Page.printToPDF",{"paperWidth":4.5,"paperHeight":11.5,
-            "marginTop":0.12,"marginBottom":0.12,"marginLeft":0.12,"marginRight":0.12,
-            "printBackground":True,"preferCSSPageSize":False,"headerTemplate":"","footerTemplate":""})
-        res=recv_until(3)
-        with open(pdf_path,"wb") as f: f.write(base64.b64decode(res["result"]["data"]))
-        ws.close()
-        print("PDF written:", pdf_path, os.path.getsize(pdf_path), "bytes")
-    finally:
-        proc.terminate()
-        try: proc.wait(timeout=5)
-        except Exception: proc.kill()
+    chrome = _resolve_chrome(args.chrome)
+    if not chrome:
+        print("跳过 PDF 导出：未找到 Chrome（--chrome 未指定且自动探测失败），仅保留交互式 HTML")
+    else:
+        import websocket
+        os.environ["no_proxy"] = "*"; os.environ["NO_PROXY"] = "*"
+        urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+        port = 9333; profile = "<TMP>/cdp_profile_wb"
+        proc = subprocess.Popen(
+            [chrome, "--headless", "--disable-gpu", "--no-sandbox", "--no-first-run",
+             "--remote-allow-origins=*", f"--remote-debugging-port={port}", f"--user-data-dir={profile}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            time.sleep(3)
+            raw=None; host="[::1]"
+            for hh in ("[::1]","127.0.0.1","localhost"):
+                for ep in (f"http://{hh}:{port}/json/list", f"http://{hh}:{port}/json/version"):
+                    try: raw=urllib.request.urlopen(ep,timeout=5).read(); host=hh; break
+                    except Exception: pass
+                if raw: break
+            targets=json.loads(raw)
+            if isinstance(targets,dict): targets=[{"type":"page","webSocketDebuggerUrl":targets.get("webSocketDebuggerUrl")}]
+            ws_url=None
+            for t in targets:
+                if t.get("type")=="page" and t.get("webSocketDebuggerUrl"): ws_url=t["webSocketDebuggerUrl"]; break
+            ws=websocket.create_connection(ws_url,timeout=30)
+            def send(mid,method,params=None): ws.send(json.dumps({"id":mid,"method":method,"params":params or {}}))
+            def recv_until(mid):
+                while True:
+                    m=json.loads(ws.recv())
+                    if m.get("id")==mid and "result" in m: return m
+            send(1,"Page.enable")
+            file_url="file://"+urllib.parse.quote(html_path)
+            send(2,"Page.navigate",{"url":file_url}); time.sleep(4)
+            send(3,"Page.printToPDF",{"paperWidth":4.5,"paperHeight":11.5,
+                "marginTop":0.12,"marginBottom":0.12,"marginLeft":0.12,"marginRight":0.12,
+                "printBackground":True,"preferCSSPageSize":False,"headerTemplate":"","footerTemplate":""})
+            res=recv_until(3)
+            with open(pdf_path,"wb") as f: f.write(base64.b64decode(res["result"]["data"]))
+            ws.close()
+            print("PDF written:", pdf_path, os.path.getsize(pdf_path), "bytes")
+        finally:
+            proc.terminate()
+            try: proc.wait(timeout=5)
+            except Exception: proc.kill()
 print("DONE")

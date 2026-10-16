@@ -2,23 +2,75 @@
 """
 物探工区(区域)两周天气看板生成器 —— 富媒体交互式 HTML 版
 
+数据源（2026-10-16 起）:
+  - **作业点与取数一律走 jozzon-mcp（九章雷电网）目标区 ta_id**：读 `wutan/wutan_ta_map.json`
+    本项目下的 `points[]`（name/lon/lat/ta_id），逐个 ta_id 调 `get_hourly_weather`。
+  - **KML 只用于地图几何展示**（边框 Polygon / 测线 LineString / 采集点标记），不再用于采样或取数。
+  - 未配置 ta_id 直接报错退出（不再回退到 Open-Meteo 网格采样）。
+
 能力:
-  - 输入一个 KML 边框(工区多边形 / 测线 LineString)，自动识别类型
-  - 按 --grid km 网格采样(默认 6km，越细点越多，贴合 EC 分辨率；超过 --maxpts 自动加粗)，并加入质心/测线中点
-  - 用 Open-Meteo 多坐标接口分批拉取所有作业点未来两周（14天）逐小时预报（可选 --model ecmwf_ifs04 高分辨率）
-  - 输出以"区域"为单位: 最坏情况包络(逐时最低温/最高降水/最大风)、连续降雨窗口；并为每个作业点计算逐日序列供交互查询
-  - 富媒体交互式 HTML：canvas 地形图(Open-Meteo 高程接口 + 高程色带 + 山体阴影 + 等高线，计曲线加粗) + 参考网格 + 作业点 + 风险区(径向渐变红/橙光斑)
-  - 顶部仅一个"重点关注"卡片，按极端天气严重程度(0绿/1黄/2橙/3红)变色；其下依次是关键指标、地图与联动图表、物探作业影响与建议
-  - 点击地图任意作业点，地图下方同一卡片内立即展开该点未来两周逐要素曲线/柱状图(气温/降水/阵风·均风可勾选叠加)；降水图阈值动态取 max(10mm, niceCeil(数据最大值))
+  - 输入 KML 边框(工区多边形 / 测线 LineString)，自动识别类型，渲染为地图几何
+  - 逐作业点取未来两周（14 天 / 336 小时）逐小时预报，并按「区域最坏情况包络」聚合
+    (逐时最低温 / 最高降水 / 最大风 / 最大阵风)，同时为每个点算逐日序列供交互查询
+  - 富媒体交互式 HTML：在线地形瓦片底图 + SVG 矢量覆盖层（边框/测线/作业点/风险区/比例尺/指北针）
+  - 顶部「重点提示」卡片按 48 小时口径定级(0绿/1黄/2橙/3红)；其下关键指标、地图与联动图表
+  - 三个页签：① 重点提示 ② 未来48小时（逐小时合并图，**不含能见度**）
+    ③ 未来2周（**固定四图：降水(含降雪) / 气温(含体感) / 阵风·均风 / 能见度**，
+    地图选点后直接出图，原有「要素勾选框」已移除）
   - 仅输出可交互 HTML（无 PDF 依赖），中文字体子集内嵌，手机/浏览器直接打开
 
 用法:
-  python build_dashboard.py --name "大关项目" --kml "炮点边框.kml" --grid 4 --outdir "."
+  python build_dashboard.py --name "云南大关" --kml "工区.kml" --points "采集点.kml" \
+      --outdir "wutan/html" --outfile "daguan-xiangmu-gongqu.html"
+  （须在 beidou 目录下运行，load_ta_map 才能找到 wutan/wutan_ta_map.json）
 
 """
 import argparse, json, os, sys, time, base64, io, urllib.request, urllib.parse, math
 from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
+
+# ======================================================================
+# 共享取数 + 分级模块（jozzon-mcp / 九章雷电网）
+#   本模块统一经 jozzon-mcp 按目标区 ta_id 取逐小时天气，并集中管理七要素分级阈值，
+#   避免物探 / 石油工程两套 skill 分级漂移。脚本把 weather-common/scripts 加入 sys.path。
+# ======================================================================
+_COMMON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "weather-common", "scripts")
+if _COMMON_DIR not in sys.path:
+    sys.path.insert(0, _COMMON_DIR)
+import jozzonwx as JW
+
+def load_ta_map(name):
+    """读取 wutan/wutan_ta_map.json 中本项目对应的作业点列表（按序号对应）。
+    返回 [{ta_id, lon, lat, label}, ...]；未配置 / 文件缺失返回 []。
+    搜索顺序：env WUTAN_TA_MAP → 当前目录 wutan/wutan_ta_map.json（兼容旧名 ta_map.json）。
+    新结构：项目 → {"points":[{name,lon,lat,ta_id}...], "lines":[...], "polygons":[...]}；
+    旧结构：项目 → [{ta_id,lon,lat,label}...]（仍兼容）。"""
+    cand = []
+    if os.environ.get("WUTAN_TA_MAP"):
+        cand.append(os.environ["WUTAN_TA_MAP"])
+    cand.append(os.path.join(os.getcwd(), "wutan", "wutan_ta_map.json"))
+    cand.append(os.path.join(os.getcwd(), "wutan", "ta_map.json"))   # 兼容旧文件名
+    for p in cand:
+        if os.path.exists(p):
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    m = json.load(fh)
+                val = m.get(name)
+                if isinstance(val, dict):        # 新结构：取作业点列表
+                    entries = val.get("points") or []
+                elif isinstance(val, list):      # 旧结构
+                    entries = val
+                else:
+                    entries = []
+                out = []
+                for i, e in enumerate(entries):
+                    out.append({"ta_id": e.get("ta_id"),
+                                "lon": e.get("lon"), "lat": e.get("lat"),
+                                "label": e.get("label") or e.get("name") or f"作业点#{i+1}"})
+                return out
+            except Exception as e:
+                print("  ⚠️ ta_map 读取失败:", repr(e))
+    return []
 
 # ======================================================================
 # 实时数据采集总开关（TEMPORARY TOGGLE）
@@ -494,60 +546,41 @@ else:
         grid_used = round(G, 1)
     print(f"作业点(含中心): {len(samples)} (目标间距 {args.grid:.0f}km)")
 
-    # ---------- 2. 多坐标批量拉取 ----------
-    # precipitation=总降水(mm，含液态与降雪水当量) / rain=雨(mm) / showers=阵雨(mm)
-    # / snowfall=降雪(cm，注意单位与降水量不同) → liquid=rain+showers 为「降雨」规范口径
-    HOURLY = ("temperature_2m,precipitation,rain,showers,snowfall,"
-              "wind_speed_10m,wind_gusts_10m")
-    BASE = "https://api.open-meteo.com/v1/forecast"
-    # Open-Meteo 免费接口无需 apikey；仅当用户显式提供真实 key 时才附加，
-    # 否则带默认占位 key 会被当作 licensed 请求而造成 429。
-    DEFAULT_KEY = "6aiF2mXsB3K7YcjT"
-    APIKEY_ARG = args.apikey if args.apikey and args.apikey != DEFAULT_KEY else ""
-    key_suffix = f"&apikey={APIKEY_ARG}" if APIKEY_ARG else ""
-    locs = []
-    CH = 12  # 每批坐标数，批间冷却，缓解 429
-    time.sleep(12)  # 高程请求后冷却，避免触发预报接口限流
-    if args.model:
-        print(f"使用模型: {args.model}（失败自动回退默认融合模型）")
-    for s0 in range(0, len(samples), CH):
-        chunk = samples[s0:s0+CH]
-        lats_s = ",".join(str(s[1]) for s in chunk)
-        lons_s = ",".join(str(s[0]) for s in chunk)
-        date_params = f"&start_date={START_DATE}&end_date={END_DATE}&start_hour={START_HOUR}&end_hour={END_HOUR}"
-        base_params = (f"latitude={lats_s}&longitude={lons_s}"
-                  f"&hourly={HOURLY}{date_params}"
-                  f"&wind_speed_unit=ms"
-                  f"&timezone=Asia%2FShanghai{key_suffix}")
-        url = f"{BASE}?{base_params}" + (f"&models={args.model}" if args.model else "")
-        print(f"Fetching 作业点 {s0+1}-{s0+len(chunk)}/{len(samples)} ...")
-        try:
-            d = http_get_json(url, timeout=90)
-        except Exception as e:
-            if args.model:
-                print(f"  模型 {args.model} 请求失败，回退默认融合模型: {repr(e)}")
-                d = http_get_json(f"{BASE}?{base_params}", timeout=90)
-            else:
-                raise
-        if isinstance(d, dict):
-            d = [d]
-        locs.extend(d)
-        time.sleep(4.0)  # 批间冷却
+    # ---------- 2. 按目标区 ta_id 从 jozzon-mcp 批量取数 ----------
+    # 数据源切换（2026-10-16）：Open-Meteo → jozzon-mcp（九章雷电网）。
+    # 作业点 = wutan/wutan_ta_map.json 里本项目注册的目标区（列表顺序对应作业点序号）；
+    # KML 仅用于地图几何展示（边框 / 测线），不再用于采样取数。
+    ta_entries = load_ta_map(args.name)
+    if ta_entries and all(e.get("ta_id") is not None for e in ta_entries):
+        # 用 ta_map 目标区覆盖 KML 采样得到的作业点（KML 仅保留几何）
+        samples = [(round(float(e["lon"]), 4), round(float(e["lat"]), 4)) for e in ta_entries]
+        pt_names = [e.get("label") or f"作业点#{i+1}" for i, e in enumerate(ta_entries)]
+        is_points = True          # 作业点即显式命名目标区，标签走 pt_names
+        center_idxs = set()       # 目标区无「中心」概念
+        ta_ids = [int(e["ta_id"]) for e in ta_entries]
+    else:
+        raise RuntimeError(
+            f"项目「{args.name}」未配置可用的 jozzon-mcp 目标区（wutan/wutan_ta_map.json 缺失或 ta_id 为 null）。"
+            f"请先在九章注册目标区并填入 ta_id，再运行取数。")
+    print(f"作业点(目标区): {len(samples)} （jozzon-mcp 取数）")
+
+    locs = JW.fetch_region(ta_ids, forecast_hours=args.days * 24, past_hours=0,
+                           time_zone="Asia/Shanghai")
     print(f"返回地点数: {len(locs)}")
 
-    times = [str(t) for t in locs[0]["hourly"]["time"]]
+    times = [str(t) for t in (locs[0].get("time") or [])]
     n = len(times)
 
     def var(loc, key):
-        return [float(v) if isinstance(v, (int, float)) else 0.0 for v in loc["hourly"][key]]
+        return list(loc.get(key) or [])
 
-    # 每点各要素序列
+    # 每点各要素序列（新口径：jozzon-mcp 统一返回，降雪已是 mm/h，不再做 cm→mm 换算）
     per = {k: [var(loc, k) for loc in locs] for k in
-           ("temperature_2m", "precipitation", "rain", "showers", "snowfall",
-            "wind_speed_10m", "wind_gusts_10m")}
-    # 「降雨」规范口径 = 雨 + 阵雨（liquid）；降雪单独看 snowfall（单位 cm，仅以 >0 判定有无）
-    per["liquid"] = [[round(r + s, 2) for r, s in
-                      zip(per["rain"][p], per["showers"][p])] for p in range(len(locs))]
+           ("rain", "showers", "snowfall", "wind_speed_10m", "wind_gusts_10m",
+            "temperature_2m", "apparent_temperature", "visibility")}
+    # 「降雨」规范口径 = rain + showers（mm/h）
+    per["rainfall"] = [[round(a + b, 2) for a, b in zip(per["rain"][p], per["showers"][p])]
+                       for p in range(len(locs))]
 
     # 降水类型码：0=无 / 1=降雨 / 2=降雪 / 3=雨夹雪（图表柱内图标用）
     # 温度规则（2026-10-08 起）：气温 < 0℃ 一律判「降雪」（液态分量不参与判型）；
@@ -562,85 +595,38 @@ else:
         # 兜底：总量有值但雨/阵雨/雪分量皆 0（冰粒等）→ 仍按「降雨」呈现，避免柱子无类型
         return 1 if precip > 0.05 else 0
 
-    per["ptype"] = [[ptype_of(per["liquid"][p][t], per["snowfall"][p][t],
-                              per["precipitation"][p][t], per["temperature_2m"][p][t])
+    per["ptype"] = [[ptype_of(per["rainfall"][p][t], per["snowfall"][p][t],
+                              per["rainfall"][p][t], per["temperature_2m"][p][t])
                      for t in range(n)]
                     for p in range(len(locs))]
 
-    # ===== 五要素预警阈值（2026-10-09 用户定；降水/降雪=mm/h 小时级，阵风 m/s，温度 ℃）=====
-    # 文本严格按用户口径；原字典笔误已修正：阵风 0 级「阵风阵风」→「阵风正常」；
-    # 高温 40 度原误写成 key=2（与 37 度重复），更正为 key=3。
-    RAIN_ALERT  = {0: "降雨正常", 1: "小雨预警(0.2mm/h)", 2: "中雨预警(1.5mm/h)",
-                   3: "大雨预警(3mm/h)", 4: "暴雨预警(6mm/h)", 5: "大暴雨预警(15mm/h)"}
-    SNOW_ALERT  = {0: "正常", 1: "小雪预警(>0.1mm/h)", 2: "中雪预警(>0.5mm/h)",
-                   3: "大雪预警(>1mm/h)", 4: "暴雪预警(>2mm/h)"}
-    GUST_ALERT  = {0: "阵风正常", 1: "劲风五级预警(8.0m/s)", 2: "强风六级预警(10.8m/s)",
-                   3: "疾风七级预警(13.9m/s)", 4: "大风八级预警(17.2m/s)"}
-    THIGH_ALERT = {0: "温度正常", 1: "35度高温预警（35度）", 2: "37度酷热预警（37度）",
-                   3: "40度极端高温预警（40度）"}
-    TLOW_ALERT  = {0: "温度正常", 1: "零下5度寒冷预警（零下5度）",
-                   2: "零下15度严寒预警（零下15度）", 3: "零下25度极寒预警（零下25度）"}
+    # ===== 七要素分级（集中到 jozzonwx，避免两套 skill 漂移；文本严格按用户 2026-10-16 口径）=====
+    RAIN_ALERT  = JW.RAIN_ALERT
+    SNOW_ALERT  = JW.SNOW_ALERT
+    WIND_ALERT  = JW.WIND_ALERT
+    GUST_ALERT  = JW.GUST_ALERT
+    UTCI_HOT    = JW.UTCI_HOT
+    UTCI_COLD   = JW.UTCI_COLD
+    VIS_ALERT   = JW.VIS_ALERT
+    RAIN_H      = JW.RAIN_H
 
-    def rain_alert(mmh):
-        if mmh is None: return 0
-        if mmh >= 15: return 5
-        if mmh >= 6:  return 4
-        if mmh >= 3:  return 3
-        if mmh >= 1.5: return 2
-        if mmh >= 0.2: return 1
-        return 0
+    def rain_alert(mmh):  return JW.grade_rain(mmh)
+    def snow_alert(mmh):  return JW.grade_snow(mmh)
+    def gust_alert(mps):  return JW.grade_gust(mps)
+    def wind_alert(mps):  return JW.grade_wind(mps)
 
-    def snow_alert(mmh):
-        if mmh is None: return 0
-        if mmh >= 2:   return 4
-        if mmh >= 1:   return 3
-        if mmh >= 0.5: return 2
-        if mmh >= 0.1: return 1
-        return 0
-
-    def gust_alert(mps):
-        if mps is None: return 0
-        if mps >= 17.2: return 4
-        if mps >= 13.9: return 3
-        if mps >= 10.8: return 2
-        if mps >= 8.0:  return 1
-        return 0
-
-    def thigh_alert(t):
-        if t is None: return 0
-        if t >= 40: return 3
-        if t >= 37: return 2
-        if t >= 35: return 1
-        return 0
-
-    def tlow_alert(t):
-        if t is None: return 0
-        if t <= -25: return 3
-        if t <= -15: return 2
-        if t <= -5:  return 1
-        return 0
-
-    def alert_items(rain_mmh, snow_mmh, gust, tmax, tmin):
-        """返回触发的预警文字列表（仅 level>=1）。各要素独立判定，可同时多条。"""
-        out = []
-        r = rain_alert(rain_mmh)
-        if r: out.append(RAIN_ALERT[r])
-        s = snow_alert(snow_mmh)
-        if s: out.append(SNOW_ALERT[s])
-        g = gust_alert(gust)
-        if g: out.append(GUST_ALERT[g])
-        h = thigh_alert(tmax)
-        if h: out.append(THIGH_ALERT[h])
-        l = tlow_alert(tmin)
-        if l: out.append(TLOW_ALERT[l])
-        return out
+    def alert_items(rain_mmh, snow_mmh, wind, gust, appMax, appMin, visMin):
+        """返回触发的预警文字列表（仅 level>=1）。七要素独立判定，可同时多条。
+        体感温度取 appMax/appMin 中较极端者（冷/热双向）；plain 温度仅展示、不单独预警。"""
+        app = appMax if (appMax is not None) else appMin
+        return JW.alert_items(rain_mmh, snow_mmh, wind, gust, app, visMin)
 
     # 区域逐时包络
     def envelope(arrs, agg):
         return [agg(arrs[p][t] for p in range(len(arrs))) for t in range(n)]
     temp_min = envelope(per["temperature_2m"], min)
     temp_max = envelope(per["temperature_2m"], max)
-    precip_max = envelope(per["precipitation"], max)
+    precip_max = envelope(per["rainfall"], max)
     rain_max = envelope(per["rain"], max)
     wind_max = envelope(per["wind_speed_10m"], max)
     gust_max = envelope(per["wind_gusts_10m"], max)
@@ -651,7 +637,7 @@ else:
     peaks_per_point = []
     for p in range(len(locs)):
         d = defaultdict(float)
-        for t, v in zip(times, per["precipitation"][p]):
+        for t, v in zip(times, per["rainfall"][p]):
             d[t[:10]] += v
         daily = sorted(d.items())
         daily_per_point.append(daily)
@@ -659,30 +645,39 @@ else:
         gmax = max(per["wind_gusts_10m"][p]); wmax = max(per["wind_speed_10m"][p])
         pmax_day = max(daily, key=lambda x: x[1])[0] if daily else None
         pmax = max((v for _, v in daily), default=0)
-        # 降雪小时峰值（cm/h → mm/h）：×10；供 index 焦点按「降雪预警」阈值判定
-        snow_max_mmh = max(per["snowfall"][p]) * 10.0
+        # 降雪小时峰值（mm/h；jozzon-mcp 已是统一 mm 口径，不再 ×10）
+        snow_max_mmh = max(per["snowfall"][p])
+        amax = max(per["apparent_temperature"][p]); amin = min(per["apparent_temperature"][p])
+        vmin = min((v for v in per["visibility"][p] if v and v > 0), default=None)
         peaks_per_point.append(dict(tmax=tmax, tmin=tmin, gustMax=gmax, windMax=wmax,
                                     pMax=round(pmax, 1), pMaxDay=pmax_day,
-                                    snowMax=round(snow_max_mmh, 2)))
+                                    snowMax=round(snow_max_mmh, 2),
+                                    pHourMax=round(max(per["rainfall"][p]), 2),
+                                    appMax=round(amax, 1), appMin=round(amin, 1),
+                                    visMin=vmin))
 
     # 每点逐日序列（交互式「逐要素查询」用）
     dailyDates = sorted({t[:10] for t in times})
     def point_daily(p):
-        tMinD, tMaxD, pD, lD, sD, wD, gD = {}, {}, {}, {}, {}, {}, {}
+        tMinD, tMaxD, pD, lD, sD, wD, gD, aMinD, aMaxD, vD = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
         pTempD = {}   # 当日「有降水时段」的最高气温，用于按温度判降水类型
-        for t, tv, pv, lv, sv, wv, gv in zip(times,
-                per["temperature_2m"][p], per["precipitation"][p], per["liquid"][p],
-                per["snowfall"][p], per["wind_speed_10m"][p], per["wind_gusts_10m"][p]):
+        for t, tv, pv, lv, sv, wv, gv, av, vv in zip(times,
+                per["temperature_2m"][p], per["rainfall"][p], per["rainfall"][p],
+                per["snowfall"][p], per["wind_speed_10m"][p], per["wind_gusts_10m"][p],
+                per["apparent_temperature"][p], per["visibility"][p]):
             d = t[:10]
             (tMinD.setdefault(d, [])).append(tv)
             (tMaxD.setdefault(d, [])).append(tv)
             pD[d] = pD.get(d, 0.0) + max(pv, 0.0)
             lD[d] = lD.get(d, 0.0) + max(lv, 0.0)          # 每日降雨合计（rain+showers）
-            sD[d] = sD.get(d, 0.0) + max(sv, 0.0)          # 每日降雪合计（cm）
+            sD[d] = sD.get(d, 0.0) + max(sv, 0.0)          # 每日降雪合计（mm）
             if pv > 0.05 or lv > 0.05 or sv > 0.01:        # 该时有降水 → 记录气温（取最高）
                 pTempD[d] = max(pTempD.get(d, -999.0), tv)
             (wD.setdefault(d, [])).append(wv)
             (gD.setdefault(d, [])).append(gv)
+            (aMinD.setdefault(d, [])).append(av); (aMaxD.setdefault(d, [])).append(av)
+            if vv and vv > 0:
+                vD[d] = min(vD.get(d, 1e9), vv)
         return {
             "tempMin": [round(min(tMinD[d]), 1) for d in dailyDates],
             "tempMax": [round(max(tMaxD[d]), 1) for d in dailyDates],
@@ -695,6 +690,10 @@ else:
             "snow":    [round(sD.get(d, 0.0), 1) for d in dailyDates],
             "windMax": [round(max(wD[d]), 1) for d in dailyDates],
             "gustMax": [round(max(gD[d]), 1) for d in dailyDates],
+            # 体感温度（UTCI，冷/热双向）与能见度（m，越低越差）逐日序列：供新增图表
+            "appMin":  [round(min(aMinD[d]), 1) for d in dailyDates],
+            "appMax":  [round(max(aMaxD[d]), 1) for d in dailyDates],
+            "visMin":  [round(vD[d]) if d in vD else 10000 for d in dailyDates],
         }
     point_series = [point_daily(p) for p in range(len(locs))]
 
@@ -715,8 +714,11 @@ else:
         "tmin": min(pp["tmin"] for pp in peaks_per_point),
         "gustMax": max(pp["gustMax"] for pp in peaks_per_point),
         "windMax": max(pp["windMax"] for pp in peaks_per_point),
-        "pHourMax": max(envelope(per["precipitation"], max)),
+        "pHourMax": max(envelope(per["rainfall"], max)),
         "snowMax": max(pp["snowMax"] for pp in peaks_per_point),
+        "appMax": max(pp["appMax"] for pp in peaks_per_point),
+        "appMin": min(pp["appMin"] for pp in peaks_per_point),
+        "visMin": min((pp["visMin"] for pp in peaks_per_point if pp["visMin"] is not None), default=None),
         "pMaxDay": peak["date"] if peak else None,
         "pMax": peak["p"] if peak else 0,
         "focusTotal": focus_total,
@@ -727,70 +729,137 @@ else:
     # ---- 未来 48 小时（近 2 天）聚合：t1「重点提示」以此为主口径 ----
     HOURS_48 = 48        # 「未来 48 小时」页保留的逐小时明细长度
     NEAR_DAYS = 2        # 「重点提示」聚焦的未来天数（=48 小时）
-    # ---- 小时级短时降水分级（mm/h，2026-09-26 用户定）：>2 大雨 / >5 暴雨 / >10 大暴雨 ----
+    # ---- 小时级短时降水分级（mm/h，2026-10-09 用户定）：>3 大雨 / >6 暴雨 / >15 大暴雨 ----
     # 只作用于「未来 48 小时」口径：逐小时风险判定、风险要素、48h 图阈值线、48h 影响卡片、48h 重点关注等级。
     # 未来 两周逐日页仍按「日累计」口径（≥25 大雨 / ≥50 暴雨），两套口径不得混用（变量名也刻意区分）。
-    RAIN_H = {"heavy": 2.0, "storm": 5.0, "torrent": 10.0}
+    RAIN_H = {"heavy": 3.0, "storm": 6.0, "torrent": 15.0}
     n2 = max(1, min(NEAR_DAYS, len(dailyDates)))
     region_near = region_daily[:n2]
     near_focus = [x for x in region_near if x["p"] >= 10]
     near_peak = max(region_near, key=lambda x: x["p"]) if region_near else None
-    # ---- 48h 逐点归属 ------------------------------------------------------
-    # pSum48 / gustMax / tmax / tmin 都是「区域包络」（各小时取各点最大值），单看数值
-    # 无法判断是哪个作业点，用户无从查起。这里逐点反查极值归属，一并写进 peaksNear，
-    # 供单项目看板与 index 卡片点名。pSum48 是逐时包络之和（最大可跨点），
-    # 故另给「最大单点 48h 累计」作为可查证的参考值。
-    def _plabel(i):
-        if is_points:
-            return pt_names[i] if (i < len(pt_names) and pt_names[i]) else f"作业点 #{i+1}"
-        if i in center_idxs:
-            return (line_name_of[i] + " 中点") if (multi and line_name_of[i]) else ("测线中点" if is_line else "工区中心")
-        if is_line:
-            _dn = cumkm_of[i] if north_of[i] else (linekm_of[i] - cumkm_of[i])
-            return (f"{line_name_of[i]} · 距北端 {_dn:.0f}km") if (multi and line_name_of[i]) else f"距北端 {_dn:.0f}km"
-        _dx = (samples[i][0] - cx) * 111.0 * math.cos(math.radians(lat0))
-        _dy = (samples[i][1] - cy) * 111.0
-        _d = math.hypot(_dx, _dy)
-        _c = compass_dir(_dx, _dy)
-        return (_c + f"方向 · 距中心 {_d:.0f}km") if _c else f"工区中心附近 {_d:.0f}km"
+    # ---------- 各要素「最恶劣作业点」定位（回答"这数值是哪个点的"） ----------
+    # 物探一个项目有几十个作业点，index/项目页的累计降水、阵风等级都是**区域包络**
+    # （各点取最恶劣），不说是哪个点就无法现场核查。故每个要素都记录
+    # 达成该极值的作业点标签+位置，写进 P48供文案引用。
+    def pt_label(i):
+        """作业点 i 的可读标签：优先 KML 名→ 测线名+里程 → 坐标。"""
+        if is_points and i < len(pt_names) and pt_names[i]:
+            return pt_names[i]
+        if line_name_of:
+            ln = line_name_of[i] if i < len(line_name_of) else ""
+            km = cumkm_of[i] if i < len(cumkm_of) else None
+            if ln and km is not None:
+                return f"{ln} {km:g}km 处"
+            if km is not None:
+                return f"{km:g}km 处"
+        lon, lat = samples[i] if i < len(samples) else (0, 0)
+        return f"{lat:.3f}N {lon:.3f}E"
 
-    _np = len(locs)
+    def worst_point(values, mode="max"):
+        """values: 每个作业点一个标量；返回 (值, 作业点索引)。"""
+        if not values:
+            return (None, 0)
+        pick = max if mode == "max" else min
+        return (pick(values), values.index(pick(values)))
 
-    def _arg_extreme(key, want_max=True):
-        best, bi = None, -1
-        for i in range(_np):
-            v = [x for x in (per[key][i][:HOURS_48]) if isinstance(x, (int, float))]
-            if not v:
-                continue
-            m = max(v) if want_max else min(v)
-            if best is None or (m > best if want_max else m < best):
-                best, bi = m, i
-        return (round(best, 2), _plabel(bi)) if bi >= 0 else (None, None)
+    def p48_vals():
+        """未来 48h 各作业点的窗口聚合值（与 P48 的取数窗口完全一致）。"""
+        appMaxL = [round(max(per["apparent_temperature"][p][:HOURS_48]), 1) for p in range(len(locs))]
+        appMinL = [round(min(per["apparent_temperature"][p][:HOURS_48]), 1) for p in range(len(locs))]
+        visMinL = [min((v for v in per["visibility"][p][:HOURS_48] if v and v > 0), default=None)
+                   for p in range(len(locs))]
+        return {
+            "pSum48": [round(sum(per["rainfall"][p][:HOURS_48]), 1) for p in range(len(locs))],
+            "pHourMax": [round(max(per["rainfall"][p][:HOURS_48]), 2) for p in range(len(locs))],
+            "snowHourMax": [round(max(per["snowfall"][p][:HOURS_48]), 2) for p in range(len(locs))],
+            "gustMax": [round(max(per["wind_gusts_10m"][p][:HOURS_48]), 1) for p in range(len(locs))],
+            "windMax": [round(max(per["wind_speed_10m"][p][:HOURS_48]), 1) for p in range(len(locs))],
+            "tmax": [round(max(per["temperature_2m"][p][:HOURS_48]), 1) for p in range(len(locs))],
+            "tmin": [round(min(per["temperature_2m"][p][:HOURS_48]), 1) for p in range(len(locs))],
+            "appMax": appMaxL, "appMin": appMinL, "visMin": visMinL,
+        }
 
-    _g48, _gpt = _arg_extreme("wind_gusts_10m")
-    _snowpt = _arg_extreme("snowfall")[1]
-    _txpt = _arg_extreme("temperature_2m")[1]
-    _tnpt = _arg_extreme("temperature_2m", want_max=False)[1]
-    _psum_pt, _psum_pn = None, None
-    for i in range(_np):
-        _v = [x for x in (per["precipitation"][i][:HOURS_48]) if isinstance(x, (int, float))]
-        _s = sum(_v)
-        if _psum_pt is None or _s > _psum_pt:
-            _psum_pt, _psum_pn = round(_s, 1), _plabel(i)
+    _pv = p48_vals()
+    _w_sum, _i_sum = worst_point(_pv["pSum48"], "max")
+    _w_ph, _i_ph = worst_point(_pv["pHourMax"], "max")
+    _w_g, _i_g = worst_point(_pv["gustMax"], "max")
+    _w_hi, _i_hi = worst_point(_pv["tmax"], "max")
+    _w_lo, _i_lo = worst_point(_pv["tmin"], "min")
+    # 极值作业点是否同一个（同点则只说一次，最常见）
+    _idxs = {i for i in (_i_sum, _i_ph, _i_g, _i_hi, _i_lo) if _pv["pSum48"]}
+
+    # ---- 逐作业点独立判级，列出「哪些点有问题」----
+    # 区域包络只回答"最差的那个点有多差"，但现场真正要的是"哪几个点不能去、为什么"。
+    # 故对每个作业点按同一套48h 阈值独立判级（阈值与 _sev_of / index 五要素一致），
+    # 输出问题点清单（含等级、首要原因、关键数值），页面与 index 都要点名。
+    def _pt_sev(i):
+        """单个作业点的 48h 风险等级（0 适宜 / 1 需关注 / 2 重点关注 / 3 高度警惕）。
+        统一走 jozzonwx 七要素分级，与 index / 页面横幅一致。"""
+        pk = {
+            "rain": _pv["pHourMax"][i],
+            "snow": _pv.get("snowHourMax", [0.0] * len(locs))[i],
+            "wind": _pv["windMax"][i],
+            "gust": _pv["gustMax"][i],
+            "appMax": _pv["appMax"][i], "appMin": _pv["appMin"][i],
+            "visMin": _pv["visMin"][i],
+        }
+        return JW.sev_from_levels(JW.el_levels(pk))
+
+    def _pt_reasons(i):
+        """该作业点触发的主要因素（挑等级最高的 2 项），用用户标准标签。"""
+        pk = {
+            "rain": _pv["pHourMax"][i],
+            "snow": _pv.get("snowHourMax", [0.0] * len(locs))[i],
+            "wind": _pv["windMax"][i],
+            "gust": _pv["gustMax"][i],
+            "appMax": _pv["appMax"][i], "appMin": _pv["appMin"][i],
+            "visMin": _pv["visMin"][i],
+        }
+        lv = JW.el_levels(pk)
+        cands = []
+        if lv["rain"]: cands.append((lv["rain"], JW.RAIN_ALERT[lv["rain"]]))
+        if lv["snow"]: cands.append((lv["snow"], JW.SNOW_ALERT[lv["snow"]]))
+        if lv["wind"]: cands.append((lv["wind"], "均风 · " + JW.WIND_ALERT[lv["wind"]]))
+        if lv["gust"]: cands.append((lv["gust"], "阵风 · " + JW.GUST_ALERT[lv["gust"]]))
+        _uv = pk["appMin"] if (pk["appMin"] is not None and (pk["appMin"] < 0 or pk["appMax"] is None)) else pk["appMax"]
+        _ul, _lbl = JW.grade_utci(_uv)
+        if _ul: cands.append((_ul, _lbl))
+        if lv["vis"]: cands.append((lv["vis"], JW.VIS_ALERT[lv["vis"]]))
+        cands.sort(key=lambda t: -t[0])
+        return [t[1] for t in cands[:2]]
+
+    _PT_SEV_LABELS = {0: "整体适宜", 1: "需关注", 2: "重点关注", 3: "高度警惕"}
+    _risk_pts = []
+    for _i in range(len(locs)):
+        _sv = _pt_sev(_i)
+        if _sv <= 0:
+            continue
+        _rs = _pt_reasons(_i)
+        _risk_pts.append({
+            "idx": _i, "label": pt_label(_i), "sev": _sv,
+            "sevLabel": _PT_SEV_LABELS[_sv],
+            "why": "、".join(_rs) if _rs else "降雨/大风",
+            "pSum48": _pv["pSum48"][_i], "gust": _pv["gustMax"][_i],
+            "tmax": _pv["tmax"][_i], "tmin": _pv["tmin"][_i],
+        })
+    _risk_pts.sort(key=lambda r: (-r["sev"], -r["pSum48"]))
 
     P48 = {
         "days": n2,
-        # 阵风/风速/最高/最低气温：一律取未来 48h **逐小时**窗口的极值（temp_max/temp_min/
-        # wind_max/gust_max 是 hourly 的区域包络序列）。
-        # ⚠️ 不可用 daily[:n2] 的两个自然日聚合——48h 窗口从当前整时起算横跨 3 个自然日
-        # （如 10-09 13时~10-11 12时），daily 口径会漏掉第 3 天上午的阵风与高温。
-        "tmax": round(max(temp_max[:HOURS_48], default=0), 1),
-        "tmin": round(min(temp_min[:HOURS_48], default=0), 1),
-        "gustMax": round(max(gust_max[:HOURS_48], default=0), 1),
-        "windMax": round(max(wind_max[:HOURS_48], default=0), 1),
+        # 温度/风：**取未来 48h 逐小时窗口极值**（与降水 pSum48 同一时间窗），
+        # 不用 daily[:n2] 前两个自然日——hourly 起点是当日整点，48h 窗口横跨 3 个自然日，
+        # daily[:2] 会整段漏掉第 3 天；也不用全窗 14 天极值（会把远端寒潮/大风当成 48h 风险）。
+        "tmax": round(max((max(per["temperature_2m"][p][:HOURS_48]) for p in range(len(locs))), default=0), 1),
+        "tmin": round(min((min(per["temperature_2m"][p][:HOURS_48]) for p in range(len(locs))), default=0), 1),
+        "gustMax": round(max((max(per["wind_gusts_10m"][p][:HOURS_48]) for p in range(len(locs))), default=0), 1),
+        "windMax": round(max((max(per["wind_speed_10m"][p][:HOURS_48]) for p in range(len(locs))), default=0), 1),
         # 近窗口小时级峰值：降水/降雪取未来 48h 内各点逐时最大值（mm/h）
-        "pHourMax": round(max((max(per["precipitation"][p][:HOURS_48]) for p in range(len(locs))), default=0), 2),
-        "snowMax": round(max((max(per["snowfall"][p][:HOURS_48]) for p in range(len(locs))), default=0) * 10.0, 2),
+        "pHourMax": round(max((max(per["rainfall"][p][:HOURS_48]) for p in range(len(locs))), default=0), 2),
+        "snowMax": round(max((max(per["snowfall"][p][:HOURS_48]) for p in range(len(locs))), default=0), 2),
+        # 体感温度（UTCI，冷/热双向）与能见度（m，越低越差）48h 区域包络
+        "appMax": round(max(_pv["appMax"]), 1) if _pv["appMax"] else None,
+        "appMin": round(min(_pv["appMin"]), 1) if _pv["appMin"] else None,
+        "visMin": min((v for v in _pv["visMin"] if v is not None), default=None),
         "pMax": round(near_peak["p"], 1) if near_peak else 0,
         "pMaxDay": near_peak["date"] if near_peak else None,
         # 未来 48 小时真实累计：逐小时窗口（起始小时起 48 个小时）之和，
@@ -801,11 +870,24 @@ else:
         "focusTotal": round(sum(x["p"] for x in near_focus), 1),
         "focusStart": near_focus[0]["date"] if near_focus else None,
         "focusEnd": near_focus[-1]["date"] if near_focus else None,
-        # 逐点归属：这些峰值是区域包络，必须点名是哪个作业点
-        "nPoints48": _np,
-        "gustPoint": _gpt, "tmaxPoint": _txpt, "tminPoint": _tnpt,
-        "snowPoint": _snowpt,
-        "pSum48Top": _psum_pt, "pSum48Point": _psum_pn,
+        # ---- 各要素的最恶劣作业点（供文案说明「是哪���作业点」）----
+        # 取最恶劣的那个点（同点合并），附带该作业点自身的 48h 累计，
+        # 便于现场直接核对「这个点未来两天到底下多少」。
+        "worstPts": {
+            "sum48": {"idx": _i_sum, "label": pt_label(_i_sum), "val": _w_sum},
+            "hour":  {"idx": _i_ph, "label": pt_label(_i_ph), "val": _w_ph},
+            "gust":  {"idx": _i_g, "label": pt_label(_i_g), "val": _w_g},
+            "hi":    {"idx": _i_hi, "label": pt_label(_i_hi), "val": _w_hi},
+            "lo":    {"idx": _i_lo, "label": pt_label(_i_lo), "val": _w_lo},
+        },
+        # 触发各要素极值的作业点是否唯一；唯一时文案用「其中 XX 最恶劣」而非逐条重复
+        "worstUnique": len(_idxs) == 1,
+        "worstLabel": (pt_label(next(iter(_idxs))) if len(_idxs) == 1 else None),
+        "nPts": len(locs),
+        # 逐作业点独立判级的问题点清单（等级降序）：现场要知道「哪几个点有问题、为什么」，
+        # 区域包络只回答"最差的有多差"。页面横幅与 index 卡片都会点名列出。
+        "riskPts": _risk_pts[:12],
+        "riskPtCount": len(_risk_pts),
     }
 
     # ---- 远期（第 3 天 ~ 第 14 天）重大极端天气：只有达到"重大"量级才提示，其余以"临近时再提示"带过 ----
@@ -826,43 +908,43 @@ else:
            "text": "；".join(f"{x['date'][5:]} {x['text']}" for x in far_items[:2])}
 
     # 极端天气分级（"重点关注"背景版变色依据）：0绿 1黄 2橙 3红
-    # 近 48 小时「小时级短时降水」并入：≥10mm/h（大暴雨）→ 2 级、≥5mm/h（暴雨）→ 1 级（日累计 25/50 口径不变）
+    # 统一走 jozzonwx 七要素分级（各要素取逐时峰值；48h 窗口口径）。
     def _sev_of(pp):
-        _ph = pp.get("pHourMax") or 0
-        # P48（未来 48h，带pSum48）一律用逐小时窗口真实累计，不用 daily[:2] 的
-        # pMax/focusTotal（两个自然日聚合会漏掉48h 窗口第 3 天那段）；
-        # 全周期 P 没有 pSum48，仍沿用日累计判据。
-        _is48 = "pSum48" in pp
-        _cum = (pp.get("pSum48") or 0) if _is48 else (pp.get("focusTotal") or 0)
-        _pmax = 0 if _is48 else (pp.get("pMax") or 0)
-        if _pmax >= 80 or _ph >= 20 or pp["gustMax"] >= 20.8 or pp["tmax"] >= 38 or _cum >= 150:
-            sev = 3
-        elif _pmax >= 50 or _ph >= RAIN_H["torrent"] or pp["gustMax"] >= 17.2 or pp["tmax"] >= 35 or pp["tmin"] <= -5 or _cum >= 80:
-            sev = 2
-        elif (_pmax >= 25 or _ph >= RAIN_H["storm"] or pp["windMax"] >= 10.8
-              or pp["gustMax"] >= 13.9 or pp["tmin"] <= 0 or _cum >= 20):
-            sev = 1
-        else:
-            sev = 0
-        # 用户规则（2026-10-09）：有明显降雨（中雨及以上，即 >=1.5mm/h）即至少定为「需关注」；
-        # 降雪、阵风、高/低温仍按各自等级判定，不因这条降雨规则被额外抬级。
-        if _ph >= 1.5:
-            sev = max(sev, 1)
-        return sev
+        pk = {
+            "rain": pp.get("pHourMax") or 0,
+            "snow": pp.get("snowMax") or 0,
+            "wind": pp.get("windMax") or 0,
+            "gust": pp.get("gustMax") or 0,
+            "appMax": pp.get("appMax"),
+            "appMin": pp.get("appMin"),
+            "visMin": pp.get("visMin"),
+        }
+        return JW.sev_from_levels(JW.el_levels(pk))
     _SEV_LABELS = {0: "整体适宜", 1: "需关注", 2: "重点关注", 3: "高度警惕"}
     SEV = _sev_of(P)
     SEV_LABEL = _SEV_LABELS[SEV]
     SEV_NEAR = _sev_of(P48)                 # 未来 48 小时分级（t1 重点提示用）
+    # 整体近 48h 评级不得低于最严重作业点的评级——否则会出现「整体适宜，但 8 个点都六级风需关注」
+    # 这类自相矛盾（整体用区域包络判、逐点用各作业点独立判，二者风场字段/窗口可能不同步）。
+    # 直接以「最差作业点」封底，保证整体评级与风险点清单口径一致。
+    _max_pt_sev = max((r["sev"] for r in _risk_pts), default=0)
+    if SEV_NEAR < _max_pt_sev:
+        SEV_NEAR = _max_pt_sev
     SEV_LABEL_NEAR = _SEV_LABELS[SEV_NEAR]
 
     # 风险点(按各点自身判定)
     def risk_of(pp):
-        # 风单位 m/s：8级≈17.2, 6级≈10.8
-        if pp["gustMax"] >= 17.2 or pp["tmax"] >= 35 or pp["pMax"] >= 50:
-            return "danger"
-        if pp["pMax"] >= 25 or pp["windMax"] >= 10.8 or pp["tmin"] <= 0:
-            return "warn"
-        return "ok"
+        # 七要素统一分级：danger=高度警惕(3) / warn=需关注·重点关注(1,2) / ok=整体适宜(0)
+        pk = {
+            "rain": pp.get("pHourMax") or 0,
+            "snow": pp.get("snowMax") or 0,
+            "wind": pp.get("windMax") or 0,
+            "gust": pp.get("gustMax") or 0,
+            "appMax": pp.get("appMax"), "appMin": pp.get("appMin"),
+            "visMin": pp.get("visMin"),
+        }
+        sev = JW.sev_from_levels(JW.el_levels(pk))
+        return {0: "ok", 1: "warn", 2: "warn", 3: "danger"}.get(sev, "ok")
     points_out = []
     for i, s in enumerate(samples):
         pp = peaks_per_point[i]
@@ -885,17 +967,25 @@ else:
         if len(locs) <= 80:
             hx = {
                 "temp":   [round(v, 1) for v in per["temperature_2m"][i][:HOURS_48]],
-                "precip": [round(v, 1) for v in per["precipitation"][i][:HOURS_48]],
-                "liq":    [round(v, 1) for v in per["liquid"][i][:HOURS_48]],      # 降雨(rain+showers)
-                "snow":   [round(v, 1) for v in per["snowfall"][i][:HOURS_48]],    # 降雪(cm)
-                "pt":     list(per["ptype"][i][:HOURS_48]),                        # 降水类型码
+                "precip": [round(v, 1) for v in per["rainfall"][i][:HOURS_48]],  # 降雨(rain+showers, mm/h)
+                "liq":    [round(v, 1) for v in per["rainfall"][i][:HOURS_48]],  # 降雨(同 precip，兼容旧字段名)
+                "snow":   [round(v, 1) for v in per["snowfall"][i][:HOURS_48]],  # 降雪(mm/h)
+                "pt":     list(per["ptype"][i][:HOURS_48]),                       # 降水类型码
                 "wind":   [round(v, 1) for v in per["wind_speed_10m"][i][:HOURS_48]],
                 "gust":   [round(v, 1) for v in per["wind_gusts_10m"][i][:HOURS_48]],
+                "apparent": [round(v, 1) for v in per["apparent_temperature"][i][:HOURS_48]],
+                "vis":    [round(v, 1) for v in per["visibility"][i][:HOURS_48]],
             }
         _ps = point_series[i]
         _p2 = _ps["precip"][:n2]
         points_out.append({
             "idx": i, "lon": s[0], "lat": s[1],
+            # 溯源：逐点落九章目标区 ID（2026-10-16 补；与 wutan_ta_map.json 对应）
+            "ta_id": (ta_ids[i] if i < len(ta_ids) else None),
+            # 该点是否有真实能见度数据（2026-10-16 补）：九章后端当前没有 visibility 要素，
+            # 逐时全 0 → point_daily 会把 series.visMin 填满哨兵 10000（假「能见度 10km」）。
+            # 前端据此决定「未来2周·能见度图」画不画，避免展示编造值。
+            "hasVis": any((v or 0) > 0 for v in per["visibility"][i]),
             "isCenter": (i in center_idxs),
             "lineIdx": line_idx_of[i] if multi else 0,
             "lineName": line_name_of[i] if multi else "",
@@ -903,13 +993,23 @@ else:
             "tmax": round(pp["tmax"], 1), "tmin": round(pp["tmin"], 1),
             "gustMax": round(pp["gustMax"], 1), "windMax": round(pp["windMax"], 1),
             "pMax": pp["pMax"], "pMaxDay": pp["pMaxDay"],
-            # 近 48 小时（近 2 天）逐点极值：供 t1「关键指标」标注极值所在作业点
-            "tmax2": round(max(_ps["tempMax"][:n2]), 1) if n2 else None,
-            "tmin2": round(min(_ps["tempMin"][:n2]), 1) if n2 else None,
-            "gustMax2": round(max(_ps["gustMax"][:n2]), 1) if n2 else None,
-            "windMax2": round(max(_ps["windMax"][:n2]), 1) if n2 else None,
+            # 每点逐日序列（未来2周逐要素图表用）：务必随数据落盘，否则离线重渲染时
+            # HTML 的 renderExplorer 读 pt.series 会 undefined → 图表整体不渲染（"没图表"根因）。
+            # point_series[i] 已在上方 line 963 计算好（含 tempMax/tempMin/precip/ptype/windMax/gustMax）。
+            "series": point_series[i],
+            # 近 48 小时逐点极值：供 t1「关键指标」标注极值所在作业点。
+            # **必须取逐小时窗口 [:HOURS_48]**，不能用 _ps 的 daily[:n2]（=daily[:2]）——
+            # hourly 起点是当日整点，48h 窗口横跨 3 个自然日，daily[:2] 会漏掉第 3 天，
+            # 导致「页面标注的作业点」实际并没有那个极值（对不上号）。
+            "tmax2": round(max(per["temperature_2m"][i][:HOURS_48]), 1) if HOURS_48 else None,
+            "tmin2": round(min(per["temperature_2m"][i][:HOURS_48]), 1) if HOURS_48 else None,
+            "gustMax2": round(max(per["wind_gusts_10m"][i][:HOURS_48]), 1) if HOURS_48 else None,
+            "windMax2": round(max(per["wind_speed_10m"][i][:HOURS_48]), 1) if HOURS_48 else None,
             "pMax2": round(max(_p2), 1) if _p2 else 0.0,
-            "series": _ps,
+            # 该作业点自身的 48h 窗口累计降水（区域包络 pSum48 取的就是它的 max）
+            "pSum48": _pv["pSum48"][i] if i < len(_pv["pSum48"]) else 0.0,
+            # 该作业点自身的 48h 最大小时降水（mm/h），供 index/页面点名"哪个点雨最强"
+            "pHour2": _pv["pHourMax"][i] if i < len(_pv["pHourMax"]) else 0.0,
             "hx": hx,
         })
 
@@ -928,7 +1028,9 @@ else:
                  "sev": SEV, "sevLabel": SEV_LABEL,
                  "sevNear": SEV_NEAR, "sevLabelNear": SEV_LABEL_NEAR,
                  "nearDays": NEAR_DAYS, "hourlyWindow": HOURS_48,
-                 "model": args.model or "open-meteo 默认融合模型",
+                 # 数据源已于 2026-10-16 切换为 jozzon-mcp（九章雷电网）目标区取数；
+                 # 与石油工程侧 build_points_data.py 的 meta.model 保持同一表述。
+                 "model": args.model or "jozzon-mcp(九章雷电网)",
                  "dailyDates": dailyDates},
         "polygon": [[round(x, 4), round(y, 4)] for x, y in poly],
         "line": [[round(x, 4), round(y, 4)] for x, y in line],
@@ -978,16 +1080,155 @@ payload["peaksNear"]["pHourMax"] = _ph_h      # 48h 内各作业点逐小时降�
 payload["peaksNear"]["pHourAt"] = _ph_i       # 该峰值出现的小时索引（相对 48h 窗口）
 payload["peaksNear"]["pHourPoint"] = _ph_pt   # 所在作业点的大致位置文案
 
+# ---- 各要素极值的作业点归属（供 index/项目页文案点名用）----
+# 物探一个项目几十个作业点，「累计降水 Xmm」「疾风七级」都是区域包络（各点最恶劣），
+# 不说是哪个点就无从查证。这里在模块级统一算一遍（实时/离线两种模式都适用），
+# 输出 worstPts={要素: {idx, loc}}；loc 用每个点已有的 loc 字段（KML名/测线里程/坐标）。
+_payload_pts = payload.get("points") or []
+
+def _pt_h48_precip(p):
+    """该作业点 48h 窗口累计降水：优先现成字段；否则用 hx.precip 前 48 格累加
+    （旧版离线数据没有 pSum48，但 hx 逐小时序列一直在）。"""
+    if p.get("pSum48") is not None:
+        return p.get("pSum48")
+    hx = p.get("hx") or {}
+    pr = (hx.get("precip") or [])[:48]
+    return round(sum(pr), 1) if pr else 0.0
+
+def _pt_h48_hour(p):
+    """该作业点 48h 最大小时降水 mm/h。"""
+    if p.get("pHour2") is not None:
+        return p.get("pHour2")
+    hx = p.get("hx") or {}
+    pr = (hx.get("precip") or [])[:48]
+    return round(max(pr), 2) if pr else 0.0
+
+_wp = {}
+if _payload_pts:
+    # 逐作业点独立判级的问题点清单（48h 窗口，与页面横幅/index 同一套阈值）。
+    # 离线数据可能缺 pSum48/gustMax2 等新字段，故缺则从 hx 的逐时序列现算。
+    # **hx 的字段名是简写**：temp(温度) / precip(降水) / gust(阵风) / wind(持续风) / snow(降雪)
+    def _hx(p, *keys, fn=max):
+        """取 hx 里第一个存在的序列（兼容不同版本的字段名）。"""
+        hxx = p.get("hx") or {}
+        for k in keys:
+            seq = (hxx.get(k) or [])[:48]
+            if seq:
+                return round(fn(seq), 1)
+        return None
+
+    def _pt48(p):
+        ps = p.get("pSum48")
+        if ps is None: ps = _hx(p, "precip", "prcp", fn=sum) or 0.0
+        ph = p.get("pHour2")
+        if ph is None:
+            v = _hx(p, "precip", "prcp", fn=max)
+            ph = round(v, 2) if v else 0.0
+        g = p.get("gustMax2") or _hx(p, "gust", "wind_gusts", "wind_gust") or 0.0
+        w = p.get("windMax2") or _hx(p, "wind", "wind_speed", "wind_speed_10m") or 0.0
+        tmax = p.get("tmax2") or _hx(p, "temp", "temperature") or 0.0
+        tmin = p.get("tmin2") or _hx(p, "temp", "temperature", fn=min) or 0.0
+        snow = p.get("snowHour2") or _hx(p, "snow", "snowfall") or 0.0
+        appMax = p.get("appMax2") or _hx(p, "apparent", "apparent_temperature") or None
+        appMin = p.get("appMin2") or _hx(p, "apparent", "apparent_temperature", fn=min) or None
+        visMin = p.get("visMin2") or _hx(p, "vis", "visibility", fn=min) or None
+        return ps, ph, g, w, tmax, tmin, snow, appMax, appMin, visMin
+
+    _PT_SEV_LABELS = {0: "整体适宜", 1: "需关注", 2: "重点关注", 3: "高度警惕"}
+    _risk_pts = []
+    for _p in _payload_pts:
+        _ps, _ph, _g, _w, _hi, _lo, _sn, _amx, _amn, _vm = _pt48(_p)
+        _pk = {"rain": _ph, "snow": _sn, "wind": _w, "gust": _g,
+               "appMax": _amx, "appMin": _amn, "visMin": _vm}
+        _sv = JW.sev_from_levels(JW.el_levels(_pk))
+        if _sv == 0:
+            continue
+        _lv = JW.el_levels(_pk)
+        _why = []
+        if _lv["rain"]: _why.append(JW.RAIN_ALERT[_lv["rain"]])
+        if _lv["snow"]: _why.append(JW.SNOW_ALERT[_lv["snow"]])
+        if _lv["wind"]: _why.append("均风 · " + JW.WIND_ALERT[_lv["wind"]])
+        if _lv["gust"]: _why.append("阵风 · " + JW.GUST_ALERT[_lv["gust"]])
+        _uv = _amn if (_amn is not None and (_amn < 0 or _amx is None)) else _amx
+        _ul, _lbl = JW.grade_utci(_uv)
+        if _ul: _why.append(_lbl)
+        if _lv["vis"]: _why.append(JW.VIS_ALERT[_lv["vis"]])
+        _risk_pts.append({
+            "idx": _p.get("idx"), "label": _p.get("loc") or f"作业点 #{((_p.get('idx') or 0)+1)}",
+            "sev": _sv, "sevLabel": _PT_SEV_LABELS[_sv],
+            "why": "、".join(_why[:2]) or "降雨/大风",
+            "pSum48": _ps, "gust": _g, "wind": _w, "tmax": _hi, "tmin": _lo,
+            "snow": _sn, "appMax": _amx, "appMin": _amn, "visMin": _vm,
+        })
+    _risk_pts.sort(key=lambda r: (-r["sev"], -r["pSum48"]))
+    payload["peaksNear"]["riskPts"] = _risk_pts[:12]
+    payload["peaksNear"]["riskPtCount"] = len(_risk_pts)
+    # 离线模式整体评级封底：离线重渲染时 meta.sevNear 是从数据文件原样读入的，
+    # 首次取数按「区域包络 + 平均风」判级，会与逐点「阵风」判级矛盾（如整体适宜却列 8 个六级风点）。
+    # 这里以「最严重作业点」封底，保证整体评级与风险点清单口径一致。
+    # 离线模式整体评级：以「当前数据权威重算」，不沿用数据文件里可能过时的旧值
+    # （旧版首次取数按「区域包络 + 平均风」判级，会把中雨 1.5mm/h、轻量风等抬成需关注，
+    # 或漏判六级阵风）。整体评级 = max(区域包络评级, 最严重作业点评级)，与在线 _sev_of
+    # 同一套阈值（风按阵风 gustMax、降水按大雨 3.0mm/h 起抬级），杜绝「整体适宜却列多个
+    # 六级风点」或「需关注徽章配天气平稳」等矛盾（如华亭 / 南郑）。
+    _pn = payload.get("peaksNear") or {}
+    _pk = {
+        "rain": _pn.get("pHourMax") or 0,
+        "snow": _pn.get("snowMax") or 0,
+        "wind": _pn.get("windMax") or 0,
+        "gust": _pn.get("gustMax") or 0,
+        "appMax": _pn.get("appMax"), "appMin": _pn.get("appMin"),
+        "visMin": _pn.get("visMin"),
+    }
+    _env_sev = JW.sev_from_levels(JW.el_levels(_pk))
+    _max_pt_sev = max((r["sev"] for r in _risk_pts), default=0)
+    _mn = payload.get("meta") or {}
+    _mn["sevNear"] = max(_env_sev, _max_pt_sev)
+    _mn["sevLabelNear"] = _PT_SEV_LABELS.get(_mn["sevNear"], "整体适宜")
+    payload["meta"] = _mn
+
+    def _worst(valfn, mode="max"):
+        vals = [(valfn(p), p) for p in _payload_pts]
+        pick = max if mode == "max" else min
+        v, p = pick(vals, key=lambda t: (t[0] if t[0] is not None else (-999 if mode == "max" else 999)))
+        return {"idx": p.get("idx"), "loc": p.get("loc") or f"作业点 #{((p.get('idx') or 0)+1)}",
+                "val": v}
+    _wp = {
+        "sum48": _worst(_pt_h48_precip),          # 48h 累计降水最多的点
+        "hour":  _worst(_pt_h48_hour),            # 48h 最大小时降水最强的点
+        "gust":  _worst(lambda p: p.get("gustMax2")), # 48h 最大阵风的点
+        "wind":  _worst(lambda p: p.get("windMax2")), # 48h 最大均风的点
+        "snow":  _worst(lambda p: _pt48(p)[6]),   # 48h 最大小时降雪的点
+        "hi":    _worst(lambda p: p.get("tmax2")),    # 48h 最高温的点
+        "lo":    _worst(lambda p: p.get("tmin2"), "min"),  # 48h 最低温的点
+        "appMax":_worst(lambda p: _pt48(p)[7]),   # 48h 最热体感的点
+        "appMin":_worst(lambda p: _pt48(p)[8], "min"),   # 48h 最冷体感的点
+        "visMin":_worst(lambda p: _pt48(p)[9], "min"),   # 48h 最低能见度的点
+    }
+    _locs = {w["loc"] for w in _wp.values()}
+    _wp["unique"] = (len(_locs) == 1)
+    _wp["label"] = (_wp["sum48"]["loc"] if len(_locs) == 1 else None)
+payload.setdefault("peaksNear", {})["worstPts"] = _wp
+
 DATA_JSON = json.dumps(payload, ensure_ascii=False)
 
-# 实时取数后，将数据包落盘，便于以后 --data 离线复用（不重复请求接口）
-# 离线模式（--data）下输入本身就是数据文件，无需再落盘，否则会按中文 args.name
-# 在 --outdir 写出一份中文名 _data.json（与 data/ 拼音文件重复且污染产物目录）。
-if args.save_data and not args.data:
-    data_path = os.path.join(base, f"{args.name}_data.json")
-    with open(data_path, "w", encoding="utf-8") as _df:
-        _df.write(DATA_JSON)
-    print("DATA saved:", data_path)
+# 实时取数后，将数据包落盘，便于以后--data 离线复用（不重复请求接口）。
+# 离线模式（--data）下把**补充字段就地回写输入文件**（新增的 worstPts 作业点归属、
+# pSum48/pHour2 等 48h 窗口字段需要持久化，否则下次离线重渲染读旧 json 会丢，
+# index 卡片就点不出具体是哪个作业点）。就地覆盖而非写到 --outdir，避免生成中文名副本。
+if args.save_data:
+    if args.data:
+        try:
+            with open(args.data, "w", encoding="utf-8") as _df:
+                _df.write(DATA_JSON)
+            print("DATA updated (in place):", args.data)
+        except Exception as e:
+            print(f"⚠️ 离线数据回写失败（不影响 HTML 生成）: {e!r}")
+    else:
+        data_path = os.path.join(base, f"{args.name}_data.json")
+        with open(data_path, "w", encoding="utf-8") as _df:
+            _df.write(DATA_JSON)
+        print("DATA saved:", data_path)
 
 # ---------- 3. HTML 模板(区域版) ----------
 TEMPLATE = r"""<!DOCTYPE html>
@@ -1217,11 +1458,6 @@ TEMPLATE = r"""<!DOCTYPE html>
         <button type="button" data-z="reset" title="复位">⟲</button>
       </div>
       <div class="mapnote" id="mapnote3"></div>
-    </div>
-    <div class="elem-row" id="elemRowD">
-      <label><input type="checkbox" value="precip" checked> 降水</label>
-      <label><input type="checkbox" value="wind" checked> 阵风 / 均风</label>
-      <label><input type="checkbox" value="temp" checked> 气温</label>
     </div>
     <div id="explorerInfo" class="explorer-info"></div>
     <div id="explorerCharts"></div>
@@ -1741,8 +1977,8 @@ function updateSelLabel(suffix){
   lab.style.display="";
 }
 
-// 小时级短时降水分级（mm/h）：>2 大雨 / >5 暴雨 / >10 大暴雨 —— 48 小时口径统一使用（Python 侧同名 RAIN_H）
-const RAIN_H={heavy:2, storm:5, torrent:10};
+// 小时级短时降水分级（mm/h）：>3 大雨 / >6 暴雨 / >15 大暴雨 —— 48 小时口径统一使用（Python 侧同名 RAIN_H，2026-10-09 用户定）
+const RAIN_H={heavy:3, storm:6, torrent:15};
 // 单要素风险等级（供读数行的小图标着色；阈值与 riskClassAtHour 完全一致，勿各写一套）
 const lvRain = v => v>=RAIN_H.storm ? "danger" : (v>=RAIN_H.heavy ? "warn" : "ok");
 const lvGust = v => v>=17.2 ? "danger" : (v>=10.8 ? "warn" : "ok");
@@ -1754,8 +1990,13 @@ const lvTemp = v => v>=35 ? "danger" : (v<=0 ? "warn" : "ok");
 function riskClassAtHour(pt, h){
   if(!pt.hx) return pt.risk;
   const g=pt.hx.gust[h]||0, p=pt.hx.precip[h]||0, t=pt.hx.temp[h]||0;
-  if(g>=17.2 || t>=35 || p>=RAIN_H.storm) return "danger";   // 暴雨及以上
-  if(g>=10.8 || t<=0 || p>=RAIN_H.heavy) return "warn";      // 大雨
+  const sn=pt.hx.snow? pt.hx.snow[h]||0 : 0;
+  const ap=pt.hx.apparent? pt.hx.apparent[h]||0 : 0;
+  const vs=pt.hx.vis? pt.hx.vis[h]||0 : 0;
+  // 七要素：降水(暴雨≥6/大雨≥3) / 阵风(17.2/10.8) / 气温(≥35/≤0) /
+  // 降雪(暴雪≥2/中雪≥0.5) / 体感(酷热≥38·酷寒≤-27 / 炎热≥32·严寒≤-13) / 能见度(<100m/<500m)
+  if(g>=17.2 || t>=35 || p>=RAIN_H.storm || sn>=2 || (vs>0&&vs<100) || ap>=38 || ap<=-27) return "danger";
+  if(g>=10.8 || t<=0 || p>=RAIN_H.heavy || sn>=0.5 || (vs>0&&vs<500) || ap>=32 || ap<=-13) return "warn";
   return "ok";
 }
 // 按当前小时重绘所有作业点颜色
@@ -1778,7 +2019,7 @@ function riskFactorsAtHour(pt, h){
   if(g>=10.8) f.push({name:"阵风", val:g.toFixed(1), unit:"m/s", level:g>=17.2?3:2,
     advice:g>=17.2?"≥8级，钻机塔架/天线/帐篷须停工":"6~7级，设备与帐篷需加固"});
   if(w>=10.8) f.push({name:"持续风", val:w.toFixed(1), unit:"m/s", level:2, advice:"≥6级，注意高空作业与帐篷"});
-  // 降水：小时级短时降水分级 —— >2 大雨 / >5 暴雨 / >10 大暴雨（暴雨及以上算高风险）
+  // 降水：小时级短时降水分级 —— >3 大雨 / >6 暴雨 / >15 大暴雨（暴雨及以上算高风险，2026-10-09 用户定）
   if(p>=RAIN_H.heavy){
     const nm = p>=RAIN_H.torrent ? "短时大暴雨" : (p>=RAIN_H.storm ? "短时暴雨" : "短时大雨");
     f.push({name:nm, val:p.toFixed(1), unit:"mm/h", level:p>=RAIN_H.storm?3:2,
@@ -1789,6 +2030,24 @@ function riskFactorsAtHour(pt, h){
   if(t>=35) f.push({name:"高温", val:t.toFixed(1), unit:"°C", level:3, advice:"高温，防暑降温、避开正午露天作业"});
   else if(t<=0) f.push({name:"低温/结冰", val:t.toFixed(1), unit:"°C", level:3, advice:"结冰/霜冻，道路与设备防滑"});
   else if(t>=32) f.push({name:"高温", val:t.toFixed(1), unit:"°C", level:1, advice:"偏热，注意防暑"});
+  // 体感温度（UTCI 双向）：≥26 偏热 / ≥32 闷热 / ≥38 酷热；≤0 偏冷 / ≤-13 严寒 / ≤-27 极寒
+  const ap=(pt.hx.apparent||[])[h]||0;
+  if(ap>=26){
+    if(ap>=38) f.push({name:"体感酷热", val:ap.toFixed(1), unit:"°C", level:3, advice:"体感酷热，防暑降温、避开正午露天作业"});
+    else if(ap>=32) f.push({name:"体感闷热", val:ap.toFixed(1), unit:"°C", level:2, advice:"体感闷热，注意防暑补水"});
+    else f.push({name:"体感偏热", val:ap.toFixed(1), unit:"°C", level:1, advice:"偏热，注意通风"});
+  } else if(ap<=0){
+    if(ap<=-27) f.push({name:"体感极寒", val:ap.toFixed(1), unit:"°C", level:3, advice:"体感极寒，户外作业严防冻伤、设备防冻"});
+    else if(ap<=-13) f.push({name:"体感严寒", val:ap.toFixed(1), unit:"°C", level:2, advice:"体感严寒，人员保暖与仪器低温启动"});
+    else f.push({name:"体感偏冷", val:ap.toFixed(1), unit:"°C", level:1, advice:"偏冷，注意人员保暖"});
+  }
+  // 能见度（m）：越低越危险，<1000 起即提示
+  const vs=(pt.hx.vis||[])[h]||0;
+  if(vs>0 && vs<1000){
+    const lv = vs<100?4 : vs<200?3 : vs<500?2 : 1;
+    const adv = vs<200?"能见度极低，暂停野外行车与吊装" : (vs<500?"能见度差，减速行车、避免吊装":"能见度偏低，行车谨慎");
+    f.push({name:"低能见度", val:Math.round(vs), unit:"m", level:lv, advice:adv});
+  }
   return f;
 }
 function updateReasonPanel(){
@@ -1826,23 +2085,35 @@ document.getElementById("metaLine").textContent = DATA.meta.kind === "points"
   const LBL2=DATA.meta.sevLabelNear||DATA.meta.sevLabel;
   document.body.classList.add("sev"+SEV);
   const nRisk = DATA.points.filter(p=>p.risk!=="ok").length;
-  const at = p => p ? `（${p}）` : "";   // 作业点归属：区域极值必须点名，否则无从查起
-  // 用户规则（2026-10-09）：横幅只说最核心的 1~2 项，按「降水→大风→气温」重要性排序，最多 2 条
-  const th=[];
-  const push = s => { if(th.length<2 && s) th.push(s); };
-  // 累计降水用「未来 48 小时」逐小时窗口真实累计，不用两个自然日之和。
-  // 对外报「最大单点」值：PN.pSum48 是各小时取各点最大的包络之和，最大可跨点，
-  // 没有任何单个作业点能达到该值（实测藏北冻土包络 18.7mm / 最大单点仅 5.3mm），报出来会误导。
-  // 包络值仍作为风险等级的保守输入，不外露。
-  const _psum = (PN.pSum48Top!=null && PN.pSum48>0) ? PN.pSum48Top : PN.pSum48;
-  if(_psum>=2) push(`最大单点累计降水 ${_psum}mm${at(PN.pSum48Point)}`);
-  if(PN.gustMax>=13.9) push(`最大阵风 ${PN.gustMax} m/s${at(PN.gustPoint)}`);
-  if(PN.tmax>=37) push(`最高气温 ${PN.tmax}°C${at(PN.tmaxPoint)}`);
-  if(PN.tmin<=-15) push(`最低气温 ${PN.tmin}°C${at(PN.tminPoint)}`);
+  // 注意：不要用 const th —— 同作用域已存在旧变量名会触发 SyntaxError 导致整页白屏
+  // 物探一个项目有几十个作业点，下列数值都是**区域包络**（各作业点里最恶劣的那个），
+  // 物探一个项目有几十个作业点，下列数值都是**区域包络**（各作业点里最恶劣的），
+  // 因此每条都点名是哪个作业点，否则现场无从查起。
+  // 标题行已写「未来 48 小时」，正文不再重复（原先正文又写「近 48 小时」、每条还带
+  // 「未来 48 小时」，同一页出现三遍）；也不提「共多少个作业点」，只说最不利点是谁。
+  // 物探一个项目有几十个作业点，下列数值都是**区域包络**（各作业点里最恶劣的），
+  // 故点名是哪个作业点，现场才能查证。
+  // **只保留最核心的 2 项**（用户 2026-10-09：概述不要面面俱到）——按要素等级排序后取前二，
+  // 其余要素在下方关键指标里能逐项看到，不必都堆在概述里。
+  const wpt = k => PN.worstPts && PN.worstPts[k] ? ptTag(PN.worstPts[k].idx) : "";
+  const at = k => (wpt(k) ? `（${wpt(k)}）` : "");
+  const _cand = [];
+  if(PN.gustMax>=17.2)     _cand.push([4, `阵风 ${PN.gustMax}m/s（≥8级）${at("gust")}`]);
+  else if(PN.gustMax>=13.9)_cand.push([3, `阵风 ${PN.gustMax}m/s（七级）${at("gust")}`]);
+  else if(PN.gustMax>=10.8)_cand.push([2, `阵风 ${PN.gustMax}m/s（六级）${at("gust")}`]);
+  if(PN.tmax>=35)          _cand.push([3, `最高温 ${PN.tmax}°C${at("hi")}`]);
+  if(PN.tmin<=-5)          _cand.push([3, `最低温 ${PN.tmin}°C${at("lo")}`]);
+  if(PN.pSum48>=50)        _cand.push([4, `累计降水 ${PN.pSum48}mm${at("sum48")}`]);
+  else if(PN.pSum48>=25)   _cand.push([3, `累计降水 ${PN.pSum48}mm${at("sum48")}`]);
+  _cand.sort((a,b)=>b[0]-a[0]);
+  const th = _cand.slice(0,2).map(x=>x[1]);
   let desc = th.length
-    ? ("近 48 小时主要关注：" + th.join("；") + (nRisk ? `。全项目 ${nRisk} 个作业点存在降雨/大风风险` : "") + "。")
-    : "近 48 小时未触发极端天气预警阈值，整体有利于野外作业。";
-  if(FARALERT.has) desc += ` 远期（第 3~14 天）另有 ${FARALERT.text}，已超出可靠预报窗口，临近时再提示。`;
+    ? (th.join("；") + "，建议据此调整作业安排。")
+    : "天气平稳，适宜作业。";
+  // 受影响作业点：只点最严重的 1 个（完整清单见地图与关键指标），避免概述过长
+  const rp = PN.riskPts || [];
+  if(rp.length) desc += ` ${rp[0].label} 最需注意（${rp[0].why}），另有 ${PN.riskPtCount} 个作业点受影响。`;
+  if(FARALERT.has) desc += ` 远期另有 ${FARALERT.text}。`;
   const box=document.getElementById("alertBox");
   box.className="alert sevbox";
   box.innerHTML=`<div class="t"><span class="sev-dot"></span>未来 48 小时 · ${LBL2}</div><div class="d">${desc}</div>`;
@@ -1852,13 +2123,19 @@ document.getElementById("metaLine").textContent = DATA.meta.kind === "points"
 const argmax = key => DATA.points.reduce((b,p)=> (b===null || (p[key]??-Infinity) > (b[key]??-Infinity)) ? p : b, null);
 const argmin = key => DATA.points.reduce((b,p)=> (b===null || (p[key]??Infinity) < (b[key]??Infinity)) ? p : b, null);
 const locStr = p => p ? ((p.isCenter ? ((DATA.meta.kind==="points" ? "作业点中心" : (DATA.isLine ? "测线中点" : "工区中心"))) : ptTag(p.idx)) + " 作业点") : "";
-const tmaxP = argmax("tmax2"), tminP = argmin("tmin2"), gustP = argmax("gustMax2"), pmaxP = argmax("pMax2");
+const tmaxP = argmax("tmax2"), tminP = argmin("tmin2"), gustP = argmax("gustMax2"), pmaxP = argmax("pMax2"), psumP = (PN.worstPts&&PN.worstPts.sum48) ? (DATA.points||[]).find(p=>p.idx===PN.worstPts.sum48.idx) : null;
 // 每格＝[要素图标, 风险等级(决定图标底色), 指标名, 数值, 说明]；图标底色一眼看出风险程度
 const PH0 = PN.pHourMax||0;   // 48h 最大小时降水（mm/h），关键指标与影响卡共用
 // 日累计 与 小时级短时降水 取重（与下方影响卡同一套阈值，避免两处口径不一致）
 const statRain = (PN.pMax>=50 || PH0>=RAIN_H.torrent) ? "danger"
                : ((PN.pMax>=25 || PH0>=RAIN_H.storm) ? "warn" : "ok");
 const stats=[
+  // 新增「48 小时累计降水」格：与横幅「未来 48 小时累计降水」同源（hourly[:48] 累加取最大），
+  // 并点名是哪个作业点——物探动辄几十个作业点，不点名现场无从核查。
+  // 新增「累计降水」格：与横幅「累计降水」同源（hourly[:48] 累加取最大）。
+  // 区块标题已写「未来 48 小时」，格内不再重复时间窗，只说数值与最不利作业点。
+  ["rain", statRain, "累计降水", (PN.pSum48||0)+"<small> mm</small>",
+    (PN.pSum48>=0.5 ? "逐小时累计" : "未来两天无明显降水") + (psumP?" · "+locStr(psumP):"")],
   ["temp", PN.tmax>=35?"danger":"ok", LBL+"最高温", PN.tmax+"°C", (PN.tmax>=35?"高温预警":"无高温预警")+" · "+locStr(tmaxP)],
   ["temp", PN.tmin<=0?"warn":"ok", LBL+"最低温", PN.tmin+"°C", (PN.tmin<=0?"注意霜冻/结冰":"无霜冻/结冰")+" · "+locStr(tminP)],
   ["wind", PN.gustMax>=17.2?"danger":(PN.gustMax>=10.8?"warn":"ok"), "最大阵风", PN.gustMax+"<small> m/s</small>",
@@ -1882,7 +2159,7 @@ function card(level,title,badge,html,icon){
 }
 const daySpan = pp => pp.focusStart ? `${pp.focusStart.slice(5)}~${pp.focusEnd.slice(5)} ` : "";
 let out="";
-// 降水判据=「小时级短时降水」（>2 大雨 / >5 暴雨 / >10 大暴雨）+ 日累计连续降雨，两者取重
+// 降水判据=「小时级短时降水」（>3 大雨 / >6 暴雨 / >15 大暴雨）+ 日累计连续降雨，两者取重
 // phS 把小时级峰值写进文案，避免只报日累计、漏掉短时强降水
 const pH=PN.pHourMax||0;
 const phS = pH>0 ? `；最大小时降水 <b>${pH} mm/h</b>${PN.pHourPoint?"（"+PN.pHourPoint+"）":""}` : "";
@@ -1920,16 +2197,21 @@ const EXPLORER = document.getElementById("explorerCharts");
 const ELEM_DEFS = {
   temp:  {name:"气温", unit:"°C", icon:"temp", type:"line2", keys:["tempMax","tempMin"], colors:["#E0822C","#2E7DA8"], labels:["每日最高温","每日最低温"],
           thr:[{v:35,color:"#C0392B",label:"高温35°"},{v:0,color:"#2E7DA8",label:"0°"}]},
-  precip:{name:"降水", unit:"mm", icon:"rain", type:"bar", keys:["precip"], colors:["#2E86DE"],
+  precip:{name:"降水", unit:"mm", icon:"rain", type:"bar", keys:["liquid"], colors:["#2E86DE"], labels:["每日降雨"],
           thr:[{v:50,color:"#C0392B",label:"暴雨50"},{v:25,color:"#E0822C",label:"大雨25"}]},
+  snow:  {name:"降雪", unit:"mm", icon:"snow", type:"bar", keys:["snow"], colors:["#3AA7C2"],
+          thr:[{v:2,color:"#C0392B",label:"暴雪2"},{v:1,color:"#E0822C",label:"大雪1"},{v:0.5,color:"#2E7DA8",label:"中雪0.5"}]},
   wind:  {name:"阵风/均风", unit:"m/s", icon:"wind", type:"line2", keys:["gustMax","windMax"], colors:["#8E44AD","#1F7A6B"], labels:["每日最大阵风","每日最大均风"],
           thr:[{v:10.8,color:"#E0822C",label:"6级10.8"},{v:17.2,color:"#C0392B",label:"8级17.2"}]},
+  apparent:{name:"体感温度", unit:"°C", icon:"temp", type:"line2", keys:["appMax","appMin"], colors:["#C0392B","#2E7DA8"], labels:["每日最高体感","每日最低体感"],
+          thr:[{v:38,color:"#C0392B",label:"酷热38"},{v:32,color:"#E0822C",label:"炎热32"},{v:0,color:"#2E7DA8",label:"0°"},{v:-13,color:"#2E7DA8",label:"严寒-13"},{v:-27,color:"#1F4E9C",label:"酷寒-27"},{v:-40,color:"#12347A",label:"极寒-40"}]},
+  vis:   {name:"能见度", unit:"m", icon:"fog", type:"line", keys:["visMin"], colors:["#7A5C9E"], labels:["每日最低能见度"],
+          thr:[{v:100,color:"#C0392B",label:"<100m"},{v:200,color:"#E0822C",label:"<200m"},{v:500,color:"#E0822C",label:"<500m"},{v:1000,color:"#2E7DA8",label:"<1000m"}]},
 };
-const ELEM_ORDER = ["precip","wind","temp"];  // 图表渲染顺序：降水 → 阵风/均风 → 气温（气温线图固定最下方）
-function selectedElems(){
-  const checked = Array.from(document.querySelectorAll('.elem-row input:checked')).map(c=>c.value);
-  return ELEM_ORDER.filter(k=>checked.includes(k));   // 按固定顺序过滤，不受勾选框 DOM 顺序影响
-}
+// 「未来两周」固定展示四图（2026-10-16 用户定，对齐石油工程展示方式）：
+//   降水（含降雪）→ 气温（含体感）→ 阵风·均风 → 能见度
+// 原先靠「要素勾选框」自选，现改为固定四图：降雪并入降水图（并列柱）、体感并入气温图（虚线）。
+const EXP_CHARTS = ["precip","temp","wind","vis"];
 // ============ 图表「自由滑动选值」绑定器（与石油工程 48 小时图一致的 pointer 拖动） ============
 // pointerdown 即选中最近一格；按住左右拖动连续跟随（pointermove + 按键态）；轻点同一格再点一次＝取消。
 // idxFn(x,w) 由各图表按自身 W/pl/pr/n 反解索引；opt.getSel/cancel/toggle 仅「选日期」用（48 小时选时不需要）。
@@ -1989,7 +2271,7 @@ function pointLine(svg, labels, series, opt){
     // （气温=最高温/最低温，风=阵风/均风），故第一条线（最高温/阵风）标在上方（y-6）、
     // 第二条线（最低温/均风）标在下方（y+14），两条线在同一 x 处上下错开、互不遮挡；
     // 仅在 opt.noPointLabels（如有）为真时跳过
-    if(!opt.noPointLabels){ s.data.forEach((v,i)=>{ const x=X(i),y=Y(v);
+    if(!opt.noPointLabels && !s.nolabel){ s.data.forEach((v,i)=>{ const x=X(i),y=Y(v);
       const ty=(si===0)? y-8 : y+16;      // 上排（大值）标在上方、下排（小值）标在下方，与峰值圆点/折线留出间隙
       const tx=el("text",{x:x,y:ty,["text-anchor"]:"middle","font-size":12,fill:s.color,["font-weight"]:"700"});
       tx.textContent=fmt(v); svg.appendChild(tx); }); }
@@ -2010,21 +2292,37 @@ function pointBar(svg, labels, vals, opt){
   (opt.thresholds||[]).forEach(th=>{ if(th.v>yMax)return;
     svg.appendChild(el("line",{x1:pl,y1:Y(th.v),x2:W-pr,y2:Y(th.v),stroke:th.color,["stroke-width"]:1.4,["stroke-dasharray"]:"5 4",opacity:.85}));
     const tx=el("text",{x:W-pr,y:Y(th.v)-5,["text-anchor"]:"end","font-size":12,fill:th.color,["font-weight"]:"700"}); tx.textContent=th.label; svg.appendChild(tx); });
-  const bw=((W-pl-pr)/n)*0.62;
+  // 柱：单系列时按降水类型着色；给出 opt.extra（[{name,vals,color}]）时改为「同一天内并列分组柱」
+  // —— 用于把降雪并入降水图（降雨蓝 + 降雪青）。
+  const extras=(opt.extra||[]);
+  const groups=1+extras.length;
+  const slot=(W-pl-pr)/n;
+  const bw=slot*(groups>1?0.30:0.62);
+  const gap=groups>1?slot*0.05:0;
   const base=Y(0);                           // 基线＝零线（旧代码误用 Hh-pt-pb，令柱高系统性少 22px、柱底悬空）
-  vals.forEach((v,i)=>{ const x=X(i);
+  const seriesList=[{name:opt.label||"降水", vals:vals, color:opt.color||"#2E86DE"}].concat(extras);
+  for(let i=0;i<n;i++){
+    const cx=X(i), gw=bw*groups+gap*(groups-1), gx=cx-gw/2;
     const pt0=(opt.ptypes||[])[i]||0;         // 降水类型：0无 1降雨 2降雪 3雨夹雪
-    let bh=0;
-    if(v>0 || pt0){                           // 图内无降水不画柱；降雪水当量不足 0.1mm 时仍保留最小柱以承载类型着色
-      bh=Math.max(base-Y(v),3);                // 小值也保证 3px 可见高度（不再被大量程压成亚像素）
-      const color=PT_FILL[pt0]||PT_FILL_FB;    // 按降水类型着色：降雨蓝 / 降雪青 / 雨夹雪紫
-      svg.appendChild(el("rect",{"class":"geo",x:x-bw/2,y:base-bh,width:bw,height:bh,rx:3,fill:color}));
+    for(let gi=0;gi<groups;gi++){
+      const s=seriesList[gi], v=(s.vals && s.vals[i]!==undefined) ? s.vals[i] : 0;
+      const bx=gx+gi*(bw+gap);
+      let bh=0;
+      if(v>0 || (groups===1 && pt0)){          // 单系列：降雪水当量不足 0.1mm 仍保留最小柱以承载类型着色
+        bh=Math.max(base-Y(v),3);              // 小值也保证 3px 可见高度（不再被大量程压成亚像素）
+        const color = groups>1 ? s.color : (PT_FILL[pt0]||PT_FILL_FB);
+        svg.appendChild(el("rect",{"class":"geo",x:bx,y:base-bh,width:bw,height:bh,rx:3,fill:color}));
+      }
+      // 柱顶直接标出数值；单系列时微量（折合不足 0.1mm）标「<0.1」、真正无降水标「0」（浅灰）
+      // 分组柱只在有值时才标（否则两根 0 柱都标「0」会明显变噪）
+      if(!opt.noPointLabels && (v>0 || groups===1)){
+        const lab=(v>0 ? fmt(v) : (pt0 ? "<0.1" : "0"));
+        const ly=bh ? base-bh-5 : base-6;
+        const tx=el("text",{x:bx+bw/2,y:ly,["text-anchor"]:"middle","font-size":(groups>1?11:12),fill:(v>0?"#5b6166":"#9aa0a4"),["font-weight"]:"700"});
+        tx.textContent=lab; svg.appendChild(tx);
+      }
     }
-    // 柱顶直接标出数值；微量（折合不足 0.1mm 但确有降雪）标「<0.1」，真正无降水标「0」（浅灰）
-    if(!opt.noPointLabels){ const lab=(v>0 ? fmt(v) : (pt0 ? "<0.1" : "0"));
-      const ly=bh ? base-bh-5 : base-6;
-      const tx=el("text",{x:x,y:ly,["text-anchor"]:"middle","font-size":12,fill:(v>0?"#5b6166":"#9aa0a4"),["font-weight"]:"700"});
-      tx.textContent=lab; svg.appendChild(tx); } });
+  }
   const tk = opt.tickEvery||1;
   for(let i=0;i<n;i+=tk){ if(!labels[i]) continue; const tx=el("text",{x:X(i),y:Hh-10,["text-anchor"]:"middle","font-size":13,fill:"#6B7378"}); tx.textContent=labels[i]; svg.appendChild(tx); }
   // 选日期（与 48 小时图一致）：点击即选、按住左右拖动可连续换日（自由滑动）
@@ -2057,6 +2355,12 @@ function renderExplorer(){
   if(SEL<0){ EXPLORER.innerHTML='<div class="empty-tip">点击上方地图任意作业点，这里将显示该点未来两周的逐要素曲线 / 柱状图。</div>';
     document.getElementById("explorerInfo").innerHTML=''; return; }
   const pt=DATA.points[SEL];
+  // 防御：若数据缺少逐日序列（series），给出明确提示而非整段报错导致图表全无。
+  if(!pt.series){
+    updateExplorerInfo();
+    EXPLORER.innerHTML='<div class="empty-tip">该作业点缺少逐日序列数据（series），无法绘制未来两周图表。请用最新版脚本（已修复 series 落盘）重新生成数据。</div>';
+    return;
+  }
   updateExplorerInfo();
   EXPLORER.innerHTML="";
   const labs=DATA.meta.dailyDates.map(d=>d.slice(5));
@@ -2069,27 +2373,28 @@ function renderExplorer(){
   // 两周（14 天）横轴点位密集：日期刻度隔天标注；数值一律「逐点直接标在图上」（2026-09-21 起，
   // 不再因 14 天而关闭标值——用户要求各图直接显示数值，免去点选才能看读数）
   const xopt={tickEvery: nd>9?2:1};
-  const sel=selectedElems();
-  if(sel.length===0){ EXPLORER.innerHTML='<div class="empty-tip">请在上方勾选至少一个要素。</div>'; return; }
-  sel.forEach(k=>{
+  // 固定四图（对齐石油工程展示方式，2026-10-16 用户定）：降水（含降雪）→ 气温（含体感）→ 阵风·均风 → 能见度
+  // 能见度例外（2026-10-16）：九章后端当前**没有 visibility 要素**，逐时取回全是 0，
+  // point_daily 会把 series.visMin 填满哨兵 10000（一条假的「能见度 10 公里」平线）。
+  // 故按 Python 侧落的 pt.hasVis 决定本图画不画；后端补齐该要素后会自动出现
+  // （与石油工程 render_points_html 的 has_vis 同一策略）。
+  EXP_CHARTS.forEach(k=>{
     const def=ELEM_DEFS[k];
+    if(k==="vis" && !pt.hasVis) return;       // 该点无真实能见度数据 → 本图不出现
+    // 缺该要素的逐日序列时不画这一图（避免整段报错导致四图全无）
+    if(def.type!=="bar" && def.keys.some(kk=>!Array.isArray(pt.series[kk]))) return;
     const box=document.createElement("div"); box.className="ec";
     const h=document.createElement("div"); h.className="ec-h"; h.textContent=`${def.name}（${def.unit}）`;
     const svg=document.createElementNS(NS,"svg"); svg.setAttribute("class","chart"); svg.setAttribute("preserveAspectRatio","none");
     box.appendChild(h);
-    // 图例：标明各系列为「每日」聚合（最高/最低温、最大阵风/均风、降水）
     const leg=document.createElement("div"); leg.className="ec-legend";
-    if(def.type==="bar"){
-      leg.innerHTML=eic(def.icon,"plain",true)+ptLegendHtml(def.icon);
-    } else {
-      leg.innerHTML=eic(def.icon,"plain",true)
-        + def.labels.map((lb,i)=>`<span class="lg"><i style="background:${def.colors[i]}"></i>${lb}</span>`).join("");
-    }
     box.appendChild(leg);
     box.appendChild(svg); EXPLORER.appendChild(box);
     if(def.type==="bar"){
-      const vals=pt.series[def.keys[0]];
-      const dmax=Math.max(...vals,0);
+      // 降水图：降雨（液/水当量）与降雪并列为同一天内的两根柱
+      const rain=((pt.series[def.keys[0]] || pt.series.precip)||[]).map(v=>v||0);
+      const snow=(pt.series.snow||[]).map(v=>v||0);
+      const dmax=Math.max(...rain, ...snow, 0);
       let yMax, thresholds;
       if(dmax < 5){            // 量小：仅显示 5mm 参考线，y 轴上限取 5
         yMax=5; thresholds=[{v:5,color:"#7FB3D5",label:"5mm"}];
@@ -2098,12 +2403,24 @@ function renderExplorer(){
         thresholds=[{v:10,color:"#C0392B",label:"大雨 10mm"}];
       }
       const ptypes=pt.series.ptype||[];
-      pointBar(svg, labs, vals, Object.assign({yMax:yMax, thresholds:thresholds, ptypes:ptypes,
+      leg.innerHTML=eic(def.icon,"plain",true)
+        +`<span class="lg"><i style="background:#2E86DE"></i>降雨(mm)</span>`
+        +`<span class="lg"><i style="background:#5DD6E8"></i>降雪(水当量 mm)</span>`;
+      pointBar(svg, labs, rain, Object.assign({yMax:yMax, thresholds:thresholds, ptypes:ptypes,
+        label:"降雨", color:"#2E86DE", extra:[{name:"降雪", vals:snow, color:"#5DD6E8"}],
         pick:DAY_PICK,
-        getRows:i=>[{t:`降水 ${fmtD(vals[i])} mm ${ptypeText(ptypes[i])}`.replace(/\s+$/,""),
-                    c:"#1565C0"}]}, xopt));
+        getRows:i=>[{t:`降雨 ${fmtD(rain[i])} mm ${ptypeText(ptypes[i])}`.replace(/\s+$/,""), c:"#1565C0"},
+                    {t:`降雪 ${fmtD(snow[i])} mm`, c:"#2A9DBF"}]}, xopt));
     } else {
-      const series=def.keys.map((kk,i)=>({name:def.labels[i],color:def.colors[i],data:pt.series[kk]}));
+      let series=def.keys.map((kk,i)=>({name:def.labels[i],color:def.colors[i],data:pt.series[kk]}));
+      // 气温图并入体感：体感画虚线且不逐点标值（4 条线同时标值会互相遮挡；点选日期时数值框仍给出）
+      if(k==="temp" && Array.isArray(pt.series.appMax) && Array.isArray(pt.series.appMin)){
+        series=series.concat([
+          {name:"每日最高体感",color:"#D84315",data:pt.series.appMax,nolabel:true},
+          {name:"每日最低体感",color:"#7E57C2",data:pt.series.appMin,nolabel:true}]);
+      }
+      leg.innerHTML=eic(def.icon,"plain",true)
+        + series.map(s=>`<span class="lg"><i style="background:${s.color}"></i>${s.name}</span>`).join("");
       pointLine(svg, labs, series, Object.assign({thresholds:def.thr,
         pick:DAY_PICK,
         getRows:i=>series.map(s=>({t:`${s.name} ${fmtD(s.data[i])} ${def.unit}`, c:s.color}))}, xopt));
@@ -2111,13 +2428,7 @@ function renderExplorer(){
   });
   paintDaySel();
 }
-// 要素勾选行补小图标（底色 .plain＝不带风险含义，与风险等级色区分）；勾选行为 flex 容器，图标与文字间距走父级 gap
-document.querySelectorAll('#elemRowD label').forEach(lb=>{
-  const inp=lb.querySelector("input"); if(!inp) return;
-  const def=ELEM_DEFS[inp.value]; if(!def || !def.icon) return;
-  inp.insertAdjacentHTML("afterend", eic(def.icon, "plain", true));   // 图标紧贴复选框之后，与文字成组
-});
-document.querySelectorAll('#elemRowD input').forEach(c=>c.addEventListener("change", renderExplorer));
+// 未来两周页已改为「固定四图」，不再有要素勾选行（原先的 #elemRowD 初始化代码已随之删除）
 renderExplorer();
 
 // ============ 选中作业点的「未来 48 小时」逐小时要素合并图（降水柱 + 均风/阵风/气温折线；配色对齐石油工程；可点击图表选时） ============
@@ -2137,13 +2448,15 @@ function renderHourlyExplorer(){
   const box=document.createElement("div"); box.className="ec"; H_EXPLORER.appendChild(box);
   const n=Math.min(pt.hx.temp.length, NEAR_H); HOURLY_N=n;
   const precip=pt.hx.precip.slice(0,n), wind=pt.hx.wind.slice(0,n), gust=pt.hx.gust.slice(0,n), temp=pt.hx.temp.slice(0,n);
+  const apparent=(pt.hx.apparent||[]).slice(0,n);
   const bottom=HH-HPB;
   // 图例（配色 / 文字对齐石油工程）
   const leg=document.createElement("div"); leg.className="ec-legend";
   leg.innerHTML= ptLegendHtml("rain")
     +`<span class="lg">${eic("wind","plain",true)}<i style="background:#1F7A6B"></i>均风(m/s)</span>`
     +`<span class="lg">${eic("wind","plain",true)}<i style="background:#8E44AD"></i>阵风(m/s)</span>`
-    +`<span class="lg">${eic("temp","plain",true)}<i style="background:#2E7DA8"></i>气温(℃)</span>`;
+    +`<span class="lg">${eic("temp","plain",true)}<i style="background:#2E7DA8"></i>气温(℃)</span>`
+    +`<span class="lg">${eic("temp","plain",true)}<i style="background:#C0392B"></i>体感(℃)</span>`;
   box.appendChild(leg);
   const svg=document.createElementNS(NS,"svg"); svg.setAttribute("class","chart"); svg.setAttribute("viewBox",`0 0 ${HW} ${HH}`); svg.setAttribute("preserveAspectRatio","none");
   box.appendChild(svg);
@@ -2169,18 +2482,20 @@ function renderHourlyExplorer(){
   const bw=((HW-HPL-HPR)/n)*0.6;
   const ptypes=pt.hx.pt||[];
   precip.forEach((v,i)=>{const pt0=ptypes[i]||0; if(!(v>0)&&!pt0)return;const x=hxOf(i),y=Yp(v),h=Math.max(bottom-y,3);const color=PT_FILL[pt0]||PT_FILL_FB;svg.appendChild(el("rect",{"class":"geo",x:x-bw/2,y:bottom-h,width:bw,height:h,rx:2,fill:color}));});
-  // 降水阈值线：小时级短时降水口径（大雨 2 / 暴雨 5 / 大暴雨 10 mm/h）
+  // 降水阈值线：小时级短时降水口径（大雨 3 / 暴雨 6 / 大暴雨 15 mm/h，2026-10-09 用户定）
   // 注意：这里**不是**日累计 25/50 —— 本图纵轴是逐小时降水，画 25/50 会与轴口径不符
-  [{v:RAIN_H.heavy,c:"#E0822C",t:"大雨 2"},{v:RAIN_H.storm,c:"#C0392B",t:"暴雨 5"},{v:RAIN_H.torrent,c:"#7B1B12",t:"大暴雨 10"}].forEach(th=>{if(th.v>precipAxis)return;const y=Yp(th.v);svg.appendChild(el("line",{x1:HPL,y1:y,x2:HW-HPR,y2:y,stroke:th.c,["stroke-width"]:1.2,["stroke-dasharray"]:"5 4",opacity:.75}));const tx=el("text",{x:HPL+3,y:y-4,["text-anchor"]:"start","font-size":10.5,fill:th.c,["font-weight"]:"700"});tx.textContent=th.t;svg.appendChild(tx);});
+  [{v:RAIN_H.heavy,c:"#E0822C",t:"大雨 3"},{v:RAIN_H.storm,c:"#C0392B",t:"暴雨 6"},{v:RAIN_H.torrent,c:"#7B1B12",t:"大暴雨 15"}].forEach(th=>{if(th.v>precipAxis)return;const y=Yp(th.v);svg.appendChild(el("line",{x1:HPL,y1:y,x2:HW-HPR,y2:y,stroke:th.c,["stroke-width"]:1.2,["stroke-dasharray"]:"5 4",opacity:.75}));const tx=el("text",{x:HPL+3,y:y-4,["text-anchor"]:"start","font-size":10.5,fill:th.c,["font-weight"]:"700"});tx.textContent=th.t;svg.appendChild(tx);});
   // 风阈值线（6级10.8 / 8级17.2）
   [{v:10.8,c:"#E0822C",t:"6级"},{v:17.2,c:"#C0392B",t:"8级"}].forEach(th=>{if(th.v>wMax)return;const y=Yw(th.v);svg.appendChild(el("line",{x1:HPL,y1:y,x2:HW-HPR,y2:y,stroke:th.c,["stroke-width"]:1.1,["stroke-dasharray"]:"5 4",opacity:.7}));const tx=el("text",{x:HW-HPR,y:y-4,["text-anchor"]:"end","font-size":10.5,fill:th.c,["font-weight"]:"700"});tx.textContent=th.t;svg.appendChild(tx);});
   // 气温阈值线（高温35 / 0°）
   [{v:35,c:"#C0392B",t:"35°"},{v:0,c:"#2E7DA8",t:"0°"}].forEach(th=>{if(th.v<tMin||th.v>tMax)return;const y=Yt(th.v);svg.appendChild(el("line",{x1:HPL,y1:y,x2:HW-HPR,y2:y,stroke:th.c,["stroke-width"]:1.1,["stroke-dasharray"]:"5 4",opacity:.7}));const tx=el("text",{x:HW-HPR,y:y-4,["text-anchor"]:"end","font-size":10.5,fill:th.c,["font-weight"]:"700"});tx.textContent=th.t;svg.appendChild(tx);});
-  // 折线：均风（绿实线）、阵风（紫虚线，对齐石油工程）、气温（蓝实线）
+  // 折线：均风（绿实线）、阵风（紫虚线）、气温（蓝实线）、体感（红实线，共温轴）
+  // （能见度已于 2026-10-16 按用户要求从本图移除，不再画独立能见度轴）
   const drawLine=(data,Yc,color,dash)=>{let p="";data.forEach((v,i)=>{const x=hxOf(i),y=Yc(v);p+=(i?"L":"M")+x.toFixed(1)+" "+y.toFixed(1)+" ";});const a={"class":"geo",d:p,fill:"none",stroke:color,["stroke-width"]:2.2,["stroke-linejoin"]:"round",["stroke-linecap"]:"round"};if(dash)a["stroke-dasharray"]=dash;svg.appendChild(el("path",a));};
   drawLine(wind,Yw,"#1F7A6B");
   drawLine(gust,Yw,"#8E44AD","6 4");
   drawLine(temp,Yt,"#2E7DA8");
+  drawLine(apparent,Yt,"#C0392B");
   // X 轴日期
   for(let i=0;i<n;i+=24){const t=DATA.hourly.time[i]||"";if(!t)continue;const tx=el("text",{x:hxOf(i),y:HH-9,["text-anchor"]:"middle","font-size":11,fill:"#6B7378"});tx.textContent=t.slice(5,10);svg.appendChild(tx);}
   // 当前小时竖线（点击图表移动）
@@ -2199,8 +2514,10 @@ function updateHourlyReadout(){
   const h=CUR_HOUR;
   const ptype=(pt.hx.pt||[])[h]||0;
   const pLabel=ptypeText(ptype);
+  const appv=(pt.hx.apparent||[])[h]||0;
   const rows=[["降水 ", pt.hx.precip[h].toFixed(1)+" mm/h"+(pLabel?" "+pLabel:""), "#0D47A1"],
               ["气温 ", pt.hx.temp[h].toFixed(1)+" ℃", "#1A5A87"],
+              ["体感 ", appv.toFixed(1)+" ℃", "#C0392B"],
               ["阵风 ", pt.hx.gust[h].toFixed(1)+" m/s", "#5B2A7D"],
               ["均风 ", pt.hx.wind[h].toFixed(1)+" m/s", "#0F5B4C"]];
   const x=hxOf(h);
@@ -2279,11 +2596,48 @@ hc = hero_css()
 html = html.replace("/*__HERO_CSS__*/", hc)
 print("hero bg:", ("embedded" if hc else "skipped"))
 
-# 内嵌中文字体子集
+# 内嵌中文字体子集（跨平台：自动按操作系统挑选系统中文字体，macOS↔Windows↔Linux 迁移无需改路径）
+def _cjk_font_candidates():
+    sp = sys.platform
+    if sp.startswith("win") or os.name == "nt":
+        return [
+            (r"C:\Windows\Fonts\msyh.ttc", 0),   # 微软雅黑
+            (r"C:\Windows\Fonts\msyh.ttc", 1),
+            (r"C:\Windows\Fonts\simsun.ttc", 0),  # 宋体
+            (r"C:\Windows\Fonts\msjh.ttc", 0),    # 微軟正黑體
+            (r"C:\Windows\Fonts\simhei.ttf", 0),  # 黑体
+        ]
+    if sp == "darwin":
+        return [
+            ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+            ("/System/Library/Fonts/STHeiti Light.ttc", 0),
+            ("/System/Library/Fonts/PingFang.ttc", 0),
+            ("/Library/Fonts/Arial Unicode.ttf", 0),
+        ]
+    # Linux / 其它：常见开源 CJK 字体
+    return [
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    ]
+
 try:
     from fontTools.ttLib import TTFont
     from fontTools import subset as ftsubset
-    fnt = TTFont("/System/Library/Fonts/Hiragino Sans GB.ttc", fontNumber=0)
+    _fnt = None
+    for _fp, _fn in _cjk_font_candidates():
+        if os.path.exists(_fp):
+            try:
+                _fnt = TTFont(_fp, fontNumber=_fn)
+                print("CJK font source:", _fp, "fontNumber=", _fn)
+                break
+            except Exception:
+                _fnt = None
+    if _fnt is None:
+        raise RuntimeError("no CJK system font found on this platform")
+    fnt = _fnt
     chars = "".join(sorted(set(html)))
     ss = ftsubset.Subsetter(); ss.populate(text=chars); ss.subset(fnt)
     buf = io.BytesIO(); fnt.save(buf)

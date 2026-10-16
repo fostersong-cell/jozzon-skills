@@ -9,7 +9,14 @@
 第 3 天起的远预报（3-14 天）不纳入本总览，仅在各单项目看板内提示。
 """
 
-import json, os, glob, argparse, base64, re
+import json, os, sys, glob, argparse, base64, re
+
+# ---------- 复用 jozzonwx 共享分级（七要素，与物探看板/石油工程看板零漂移） ----------
+# 2026-10-16 改造：本页的分级不再自带阈值字典，统一走 weather-common/jozzonwx.py。
+_COMMON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "weather-common", "scripts")
+if os.path.isdir(_COMMON):
+    sys.path.insert(0, os.path.abspath(_COMMON))
+import jozzonwx as JW
 
 # 项目根目录（其下含 beidou/{wutan,engineering}/{data,html}）。
 # 三级回退，顺序：环境变量 BEIDOU_WORK > --base > 从脚本位置自动上溯。
@@ -45,174 +52,102 @@ _HERO_CANDIDATES = (
 HERO_BLEED = "16px"          # 与 body 左右 padding 一致 → 背景正好贴到视口边
 HERO_FADE = (("0%", ".78"), ("46%", ".38"), ("100%", ".03"),)
 
-# ===== 五要素预警阈值（2026-10-09 用户定；降水/降雪=mm/h 小时级，阵风 m/s，温度 ℃）=====
-# 文本严格按用户口径；原字典笔误已修正：阵风 0 级「阵风阵风」→「阵风正常」；
-# 高温 40 度原误写成 key=2（与 37 度重复），更正为 key=3。
-RAIN_ALERT  = {0: "降雨正常", 1: "小雨预警(0.2mm/h)", 2: "中雨预警(1.5mm/h)",
-               3: "大雨预警(3mm/h)", 4: "暴雨预警(6mm/h)", 5: "大暴雨预警(15mm/h)"}
-SNOW_ALERT  = {0: "正常", 1: "小雪预警(>0.1mm/h)", 2: "中雪预警(>0.5mm/h)",
-               3: "大雪预警(>1mm/h)", 4: "暴雪预警(>2mm/h)"}
-GUST_ALERT  = {0: "阵风正常", 1: "劲风五级预警(8.0m/s)", 2: "强风六级预警(10.8m/s)",
-               3: "疾风七级预警(13.9m/s)", 4: "大风八级预警(17.2m/s)"}
-THIGH_ALERT = {0: "温度正常", 1: "35度高温预警（35度）", 2: "37度酷热预警（37度）",
-               3: "40度极端高温预警（40度）"}
-TLOW_ALERT  = {0: "温度正常", 1: "零下5度寒冷预警（零下5度）",
-               2: "零下15度严寒预警（零下15度）", 3: "零下25度极寒预警（零下25度）"}
-# index 卡片专用：只留等级名，去掉 6mm/h、13.9m/s、35度 这类阈值数字
-RAIN_ALERT_S  = {0: "降雨正常", 1: "小雨预警", 2: "中雨预警",
-               3: "大雨预警", 4: "暴雨预警", 5: "大暴雨预警"}
-SNOW_ALERT_S  = {0: "正常", 1: "小雪预警", 2: "中雪预警",
-               3: "大雪预警", 4: "暴雪预警"}
-GUST_ALERT_S  = {0: "阵风正常", 1: "劲风五级预警", 2: "强风六级预警",
-               3: "疾风七级预警", 4: "大风八级预警"}
-THIGH_ALERT_S = {0: "温度正常", 1: "高温预警", 2: "酷热预警", 3: "极端高温预警"}
-TLOW_ALERT_S  = {0: "温度正常", 1: "寒冷预警", 2: "严寒预警", 3: "极寒预警"}
+# ===== 七要素预警标签：统一引用 jozzonwx（JW.RAIN_ALERT / JW.RAIN_ALERT_S / ...）=====
+# 2026-10-16 改造：旧的五要素阈值字典与 grading 函数全部删除，改走共享模块，
+# 避免本页与物探看板、石油工程看板出现分级漂移。
+RAIN_ALERT, RAIN_ALERT_S = JW.RAIN_ALERT, JW.RAIN_ALERT_S
+SNOW_ALERT, SNOW_ALERT_S = JW.SNOW_ALERT, JW.SNOW_ALERT_S
+GUST_ALERT, GUST_ALERT_S = JW.GUST_ALERT, JW.GUST_ALERT_S
+WIND_ALERT, WIND_ALERT_S = JW.WIND_ALERT, JW.WIND_ALERT_S
+UTCI_HOT, UTCI_HOT_S     = JW.UTCI_HOT, JW.UTCI_HOT_S
+UTCI_COLD, UTCI_COLD_S   = JW.UTCI_COLD, JW.UTCI_COLD_S
+VIS_ALERT, VIS_ALERT_S   = JW.VIS_ALERT, JW.VIS_ALERT_S
+RAIN_H                   = JW.RAIN_H
+rain_alert, snow_alert   = JW.grade_rain, JW.grade_snow
+gust_alert, wind_alert   = JW.grade_gust, JW.grade_wind
 
-def rain_alert(mmh):
-    if mmh is None: return 0
-    if mmh >= 15: return 5
-    if mmh >= 6:  return 4
-    if mmh >= 3:  return 3
-    if mmh >= 1.5: return 2
-    if mmh >= 0.2: return 1
-    return 0
+# 概述排序权重：等级名 → 严重度（数字越小越严重）。用于「只保留最核心 1~2 项」时排序。
+# 用户 2026-10-09 要求概述不要面面俱到，故按严重度取前二，其余项在项目页关键指标里看。
+# 2026-10-16 补齐新增要素的等级名：均风（狂风十级）、体感（UTCI 冷/热）、能见度。
+_FOCUS_RANK = {
+    # 极高（lv4/5）
+    "大暴雨预警": 1, "暴雪预警": 1, "狂风十级预警": 1, "极热预警": 1, "极寒预警": 1,
+    "酷寒预警": 2, "能见度极低预警": 1, "极端高温预警": 1, "高度警惕": 1,
+    # 高（lv3）
+    "暴雨预警": 3, "大雨预警": 4, "大雪预警": 3, "疾风七级预警": 3, "大风八级预警": 1,
+    "酷热预警": 3, "严寒预警": 4, "能见度劣预警": 3,
+    # 中（lv2）
+    "中雨预警": 6, "中雪预警": 6, "强风六级预警": 4, "炎热预警": 6, "能见度差预警": 6,
+    # 低（lv1）
+    "小雨预警": 8, "小雪预警": 8, "劲风五级预警": 6, "偏热预警": 8, "寒冷预警": 7,
+    "能见度偏低预警": 8,
+    # 正常
+    "降雨正常": 99, "正常": 99, "阵风正常": 99, "均风正常": 99,
+    "温度正常": 99, "能见度正常": 99, "UTCI正常": 99,
+}
 
-def snow_alert(mmh):
-    if mmh is None: return 0
-    if mmh >= 2:   return 4
-    if mmh >= 1:   return 3
-    if mmh >= 0.5: return 2
-    if mmh >= 0.1: return 1
-    return 0
-
-def gust_alert(mps):
-    if mps is None: return 0
-    if mps >= 17.2: return 4
-    if mps >= 13.9: return 3
-    if mps >= 10.8: return 2
-    if mps >= 8.0:  return 1
-    return 0
-
-def thigh_alert(t):
-    if t is None: return 0
-    if t >= 40: return 3
-    if t >= 37: return 2
-    if t >= 35: return 1
-    return 0
-
-def tlow_alert(t):
-    if t is None: return 0
-    if t <= -25: return 3
-    if t <= -15: return 2
-    if t <= -5:  return 1
-    return 0
-
-def alert_items(rain_mmh, snow_mmh, gust, tmax, tmin, verbose=True, min_lv=1):
+def alert_items(rain_mmh, snow_mmh, gust, wind, appMax, appMin, visMin, verbose=True, min_lv=1):
     """返回触发的预警文字列表（默认仅 level>=1）。各要素独立判定，可同时多条。
     verbose=False 时只给等级名称、不带任何阈值数值（index 卡片用，避免满屏数字）。
     min_lv：只保留等级 >= min_lv 的要素，默认 1 = 低等级要素（小雨、五级风等）照常写出，
     因为它们是客观事实；用户澄清（2026-10-09）这些低等级**不写反而丢失信息**，
-    只是它们**不足以抬高风险等级**——抬级只看「中雨及以上」或「任一 3 级预警」。"""
+    只是它们**不足以抬高风险等级**——抬级只看「中雨及以上」或「任一 3 级预警」。
+    2026-10-16：七要素（降雨/降雪/均风/阵风/体感 UTCI/能见度），plain 温度不再单独预警。"""
     out = []
-    r = rain_alert(rain_mmh)
-    if r >= min_lv: out.append(RAIN_ALERT[r] if verbose else RAIN_ALERT_S[r])
-    s = snow_alert(snow_mmh)
-    if s >= min_lv: out.append(SNOW_ALERT[s] if verbose else SNOW_ALERT_S[s])
-    g = gust_alert(gust)
-    if g >= min_lv: out.append(GUST_ALERT[g] if verbose else GUST_ALERT_S[g])
-    h = thigh_alert(tmax)
-    if h >= min_lv: out.append(THIGH_ALERT[h] if verbose else THIGH_ALERT_S[h])
-    l = tlow_alert(tmin)
-    if l >= min_lv: out.append(TLOW_ALERT[l] if verbose else TLOW_ALERT_S[l])
+    r = JW.grade_rain(rain_mmh)
+    if r >= min_lv: out.append(JW.RAIN_ALERT[r] if verbose else JW.RAIN_ALERT_S[r])
+    s = JW.grade_snow(snow_mmh)
+    if s >= min_lv: out.append(JW.SNOW_ALERT[s] if verbose else JW.SNOW_ALERT_S[s])
+    g = JW.grade_gust(gust)
+    if g >= min_lv: out.append(JW.GUST_ALERT[g] if verbose else JW.GUST_ALERT_S[g])
+    w = JW.grade_wind(wind)
+    if w >= min_lv: out.append(JW.WIND_ALERT[w] if verbose else JW.WIND_ALERT_S[w])
+    ul = 0
+    if appMax is not None: ul = max(ul, JW.grade_utci(appMax)[0])
+    if appMin is not None: ul = max(ul, JW.grade_utci(appMin)[0])
+    if ul >= min_lv:
+        if appMax is not None and JW.grade_utci(appMax)[0] >= ul:
+            out.append(JW.UTCI_HOT[ul] if verbose else JW.UTCI_HOT_S[ul])
+        else:
+            out.append(JW.UTCI_COLD[ul] if verbose else JW.UTCI_COLD_S[ul])
+    v = JW.grade_vis(visMin) if visMin is not None else 0
+    if v >= min_lv: out.append(JW.VIS_ALERT[v] if verbose else JW.VIS_ALERT_S[v])
     return out
-
-def wutan_48h(d):
-    """物探 _data.json 的「未来 48 小时」全要素峰值（一律 hourly 前 48 个逐时窗口）。
-
-    ⚠️ 口径铁律（2026-10-09 用户定）：阵风/风速/最高/最低气温原先取`daily[:2]` 的两个
-    自然日聚合，会漏掉 48h 窗口第 3 天那段——48h 窗口从当前整时起算横跨 3 个自然日
-    （如 10-09 13时~10-11 12时）。这里统一从 hourly 的区域包络序列现算。
-    hourly 里没有降雪包络（只有 tempMin/tempMax/precipMax/rainMax/windMax/gustMax），
-    故snowMax 仍取 peaksNear（它本来就是 hourly[:48] 口径）。
-    hourly 缺失的旧数据才回退 peaksNear。
-    """
-    p = d.get("peaksNear") or d.get("peaks") or {}
-    h = d.get("hourly") or {}
-    t = h.get("time") or []
-    n = min(48, len(t)) if t else 0
-
-    def _sel(k):
-        return [x for x in (h.get(k) or [])[:n] if isinstance(x, (int, float))]
-
-    if not n:
-        return {"pHourMax": p.get("pHourMax"), "snowMax": p.get("snowMax"),
-                "pSum48": p.get("pSum48"), "gust": p.get("gustMax"),
-                "wind": p.get("windMax"), "tmax": p.get("tmax"), "tmin": p.get("tmin")}
-
-    def mx(k):
-        v = _sel(k); return round(max(v), 1) if v else None
-
-    def mn(k):
-        v = _sel(k); return round(min(v), 1) if v else None
-
-    sm = _sel("precipMax")
-    return {"pHourMax": mx("precipMax"), "snowMax": p.get("snowMax"),
-            "pSum48": round(sum(sm), 1) if sm else None,
-            "gust": mx("gustMax"), "wind": mx("windMax"),
-            "tmax": mx("tempMax"), "tmin": mn("tempMin")}
-
-
-def sev_wutan_48h(pk):
-    """物探「未来 48 小时」风险等级：与 build_dashboard._sev_of(P48) 同阈值、同口径，
-    全部要素取自 wutan_48h()（hourly[:48]），不再用 daily[:2] 的两个自然日聚合。
-    用户规则：中雨及以上（≥1.5mm/h）即至少「需关注」。"""
-    pk = pk or {}
-    ph   = pk.get("pHourMax") or 0.0
-    cum  = pk.get("pSum48") or 0.0
-    gust = pk.get("gust") or 0.0
-    wind = pk.get("wind") or 0.0
-    tmax = pk.get("tmax")
-    tmin = pk.get("tmin")
-    if ph >= 20 or gust >= 20.8 or (tmax is not None and tmax >= 38) or cum >= 150:
-        sev = 3
-    elif (ph >= 10 or gust >= 17.2 or (tmax is not None and tmax >= 35)
-          or (tmin is not None and tmin <= -5) or cum >= 80):
-        sev = 2
-    elif ph >= 5 or wind >= 10.8 or gust >= 13.9 or (tmin is not None and tmin <= 0) or cum >= 20:
-        sev = 1
-    else:
-        sev = 0
-    if rain_alert(ph) >= 2:
-        sev = max(sev, 1)
-    return sev
-
 
 def project_alert_tuples(d, is_eng=False):
     """返回项目近 48 小时触发的预警元组 [(kind, level, label_s), ...]（仅 level>=1）。
     label_s 为不含阈值数字的等级名（index 用），与单项目看板 build_dashboard 的
     alert_items 同源、同阈值，保证总览与单页一致。
-    物探取 peaksNear（pHourMax/snowMax/gustMax/tmax/tmin）；工程取 summary
-    （pHourMax/snowHourMax/maxGust/maxTemp/minTemp，注意雪的键名不同）。"""
-    out = []
+    物探取 peaksNear 的 48h 峰值（pHourMax/snowMax/gustMax/windMax/appMax/appMin/visMin）；
+    工程**必须现算** hourly[:48]（见 peaks_48h_eng），不能用整窗 summary——
+    summary 里的极值是 14 天全窗值，会把第 3~14 天的远端大风/高温当成「未来 48 小时」。"""
     if not is_eng:
-        pk = wutan_48h(d)
-        ph, sm, gm, tx, tn = (pk.get("pHourMax"), pk.get("snowMax"), pk.get("gust"),
-                              pk.get("tmax"), pk.get("tmin"))
+        p = d.get("peaksNear") or d.get("peaks", {}) or {}
+        ph = p.get("pHourMax"); sm = p.get("snowMax"); gm = p.get("gustMax")
+        wm = p.get("windMax"); amax = p.get("appMax"); amin = p.get("appMin")
+        vmin = p.get("visMin")
     else:
-        s = d.get("summary", {}) or {}
-        pk = peaks_48h_eng(d)
-        ph = pk.get("pHourMax"); sm = pk.get("snowHourMax")
-        gm = pk.get("gust"); tx = pk.get("tmax"); tn = pk.get("tmin")
-    r = rain_alert(ph)
-    if r: out.append(("rain", r, RAIN_ALERT_S[r]))
-    s = snow_alert(sm)
-    if s: out.append(("snow", s, SNOW_ALERT_S[s]))
-    g = gust_alert(gm)
-    if g: out.append(("gust", g, GUST_ALERT_S[g]))
-    h = thigh_alert(tx)
-    if h: out.append(("thigh", h, THIGH_ALERT_S[h]))
-    l = tlow_alert(tn)
-    if l: out.append(("tlow", l, TLOW_ALERT_S[l]))
+        p = peaks_48h_eng(d)
+        ph = p.get("pHourMax"); sm = p.get("snowHourMax"); gm = p.get("gust")
+        wm = p.get("wind"); amax = p.get("appMax"); amin = p.get("appMin")
+        vmin = p.get("visMin")
+    out = []
+    r = JW.grade_rain(ph)
+    if r: out.append(("rain", r, JW.RAIN_ALERT_S[r]))
+    s = JW.grade_snow(sm)
+    if s: out.append(("snow", s, JW.SNOW_ALERT_S[s]))
+    g = JW.grade_gust(gm)
+    if g: out.append(("gust", g, JW.GUST_ALERT_S[g]))
+    w = JW.grade_wind(wm)
+    if w: out.append(("wind", w, JW.WIND_ALERT_S[w]))
+    ul = 0
+    if amax is not None: ul = max(ul, JW.grade_utci(amax)[0])
+    if amin is not None: ul = max(ul, JW.grade_utci(amin)[0])
+    if ul:
+        hot = amax is not None and JW.grade_utci(amax)[0] >= ul
+        out.append(("utci", ul, (JW.UTCI_HOT_S[ul] if hot else JW.UTCI_COLD_S[ul])))
+    v = JW.grade_vis(vmin) if vmin is not None else 0
+    if v: out.append(("vis", v, JW.VIS_ALERT_S[v]))
     return out
 
 def _distinct_labels(tuples):
@@ -337,8 +272,10 @@ def build_near_term_desc(rows, wd=NEAR_DAYS):
     dates = ref["near"]["dates"] if ref else []
     start = dates[0][5:] if dates else "?"
     end = dates[wd - 1][5:] if len(dates) >= wd else (dates[-1][5:] if dates else "?")
-    # 逐项目按近 48h 预警等级归类（kind: rain/snow/gust/tlow/thigh）
-    groups = {"rain": [], "snow": [], "gust": [], "tlow": [], "thigh": []}
+    # 逐项目按近 48h 预警等级归类（kind: rain/snow/wind/gust/utci/vis）
+    # 2026-10-16：七要素口径——新增「均风」「体感(UTCI)」「能见度」三类，
+    # 旧的 thigh/tlow（plain 温度）改由体感温度 UTCI 承担。
+    groups = {"rain": [], "snow": [], "wind": [], "gust": [], "utci": [], "vis": []}
     for r in valid:
         snow48 = (r.get("near") or {}).get("snow48", 0) or 0
         for kind, lv, lbl in (r.get("alerts") or []):
@@ -351,66 +288,107 @@ def build_near_term_desc(rows, wd=NEAR_DAYS):
     for k in groups:
         groups[k].sort(reverse=True)  # 按等级降序
     parts = []
-    # 用户规则（2026-10-09）：概述只说最核心的 1~2 类，不必面面俱到——
-    # ① 按各类最高等级排序，只保留前 2 类；② 每类最多点名 3 个项目（其余「等N个」收尾）；
-    # ③ 处置建议压到一句短语；④ 不重复括号内的等级名（正文已用
-    #    「大雨及以上降水」「七级及以上大风」点明量级，括号冗余）。
-    def _top(kind, limit=3):
-        g = groups[kind]
-        names = "、".join(n for _, n, _ in g[:limit])
-        return f"{names}{f'等{len(g)}个' if len(g) > limit else ''}"
-
-    order = sorted(groups, key=lambda k: max((lv for lv, _, _ in groups[k]), default=0), reverse=True)
-    for _k in [k for k in order if groups[k]][:2]:
-        if _k == "rain":
-            parts.append(f"{_top('rain')} 有大雨及以上降水，需防山洪、泥水淹泡与道路中断")
-        elif _k == "gust":
-            parts.append(f"{_top('gust')} 有七级及以上大风，需防风加固与高空作业")
-        elif _k == "snow":
-            parts.append(f"{_top('snow')} 有暴雪/大雪，需防积雪与道路封闭")
-        elif _k == "tlow":
-            parts.append(f"{_top('tlow')} 低温严寒，需防寒保暖与设备防冻")
-        elif _k == "thigh":
-            parts.append(f"{_top('thigh')} 高温，需防暑降温")
+    # 用户规则（2026-10-09）：概述里不再重复括号内的预警等级名（如「（暴雨预警、大雨预警）」），
+    # 正文已用「大雨及以上降水」「七级及以上大风」等文字点明量级，括号属冗余。
+    if groups["rain"]:
+        names = "、".join(n for _, n, _ in groups["rain"][:6])
+        tail = f"等{len(groups['rain'])}个" if len(groups["rain"]) > 6 else ""
+        parts.append(f"{names}{tail} 存在大雨及以上降水，需防范山洪、泥水淹泡与进场道路中断")
+    if groups["snow"]:
+        names = "、".join(n for _, n, _ in groups["snow"][:6])
+        tail = f"等{len(groups['snow'])}个" if len(groups['snow']) > 6 else ""
+        parts.append(f"{names}{tail} 有暴雪/大雪，需防范积雪、道路封闭与设备覆冰")
+    # 风：均风与阵风合并成一句（同属风要素，分开说会重复点名同一批项目）
+    _wind_all = [(lv, n) for k in ("wind", "gust") for lv, n, _ in groups[k]]
+    if _wind_all:
+        _wind_all.sort(reverse=True)
+        names = "、".join(dict.fromkeys(n for _, n in _wind_all[:6]))
+        tail = f"等{len(_wind_all)}个" if len(_wind_all) > 6 else ""
+        parts.append(f"{names}{tail} 有七级及以上大风，需做好防风加固与高空/吊装作业防范")
+    if groups["utci"]:
+        names = "、".join(n for _, n, _ in groups["utci"][:6])
+        tail = f"等{len(groups['utci'])}个" if len(groups['utci']) > 6 else ""
+        parts.append(f"{names}{tail} 体感温度极端（酷热/酷寒），需防暑降温或防寒保暖与设备防冻")
+    if groups["vis"]:
+        names = "、".join(n for _, n, _ in groups["vis"][:6])
+        tail = f"等{len(groups['vis'])}个" if len(groups['vis']) > 6 else ""
+        parts.append(f"{names}{tail} 能见度低于 200 米，需防范低能见度下的行车与吊装风险")
     if not parts:
         # 无 lv>=3 显著风险：点出仍有小雨/小风的项目，整体以分散性弱降水为主
-        minor = [r["name"] for r in valid if any(k == "rain" or k == "gust" for k, _, _ in (r.get("alerts") or []))]
+        minor = [r["name"] for r in valid
+                 if any(k in ("rain", "gust", "wind", "snow", "vis", "utci")
+                        for k, _, _ in (r.get("alerts") or []))]
         if minor:
-            parts.append(f"未来 2 天各项目以分散性小雨/小风为主（如{'、'.join(minor[:3])}），整体适宜作业")
+            parts.append(f"未来 2 天各项目以分散性小雨/小风为主（如{'、'.join(minor[:6])}），无明显强降雨与大风，整体适宜作业")
         else:
-            parts.append("未来 2 天各项目天气平稳，整体适宜作业")
+            parts.append("未来 2 天各项目天气平稳，无明显强降雨与大风，整体适宜作业")
     body = "；".join(parts) + "。"
     return f'<span class="nt-h">未来 {wd} 天（48小时）风险（{start} ~ {end}）</span>{body}'
 
 def peaks_48h_eng(d):
-    """工程单点位 _data.json 的「未来 48 小时」全要素峰值（一律 hourly 前 48 个逐时）。
-    与 weather-engineering-index 的 peaks_48h 完全同口径。
+    """工程单点位 _data.json 的「未来 48 小时」七要素峰值（与 weather-engineering-index 的
+    gen_points_summary.peaks_48h 及项目页 render_points_html.py 同源同值）：
+    **全部取 hourly 前 48 格**，不用 daily[:2]、不用 summary 全窗值。
     summary 里的 maxGust/maxTemp/minTemp/pHourMax/snowHourMax 是整窗 14 天峰值，
-    直接用在「未来 48 小时」卡片会把第 3~14 天的远端大风/高温误报进来，故必须现算；
-    同理不能用 daily[:2] 的两个自然日聚合（48h 窗口横跨 3 个自然日）。"""
+    直接用在「未来 48 小时」卡片会把第 3~14 天的远端大风/高温误报进来，故必须现算。
+
+    2026-10-16：新增体感温度(appMax/appMin)与能见度(visMin)；降雪改 mm/h 口径，
+    **不再做 ×10 换算**（新数据 snowfall 已是 mm/h）。降雨改读 rainfall(=rain+showers)。
+    """
     h = d.get("hourly", {}) or {}
     t = h.get("time", [])
     n = min(48, len(t)) if t else 0
+    # 新口径：rainfall = rain + showers；旧数据没有 rainfall 时回退 precipitation
+    precip = h.get("rainfall", []) or h.get("precipitation", []) or []
+    snow = h.get("snowfall", []) or []
+    gusts = h.get("wind_gusts_10m", []) or []
+    winds = h.get("wind_speed_10m", []) or []
+    temps = h.get("temperature_2m", []) or []
+    appr = h.get("apparent_temperature", []) or []
+    vis = h.get("visibility", []) or []
+    pH = round(max(precip[:n]), 2) if (n and precip) else None
+    sH = round(max(snow[:n]), 2) if (n and snow) else None
+    vp = [v for v in vis[:n] if v and v > 0]
+    if gusts or temps or appr:
+        g = round(max(gusts[:n]), 1) if gusts else None
+        w = round(max(winds[:n]), 1) if winds else None
+        tmax = round(max(temps[:n]), 1) if temps else None
+        tmin = round(min(temps[:n]), 1) if temps else None
+        appMax = round(max(appr[:n]), 1) if appr else None
+        appMin = round(min(appr[:n]), 1) if appr else None
+        visMin = round(min(vp), 0) if vp else None
+    else:
+        # 无 hourly 的极旧数据才退回 daily 前 2 天
+        daily = (d.get("daily") or [])[:2]
+        g = max((x.get("gustMax", 0) for x in daily), default=0) if daily else None
+        w = max((x.get("windMax", 0) for x in daily), default=0) if daily else None
+        tmax = max((x.get("tempMax", -99) for x in daily), default=-99) if daily else None
+        tmin = min((x.get("tempMin", 99) for x in daily), default=99) if daily else None
+        # ⚠️ 体感/能见度缺省必须给 None，不能给 -99/99 哨兵值：
+        # 旧数据没有 apparentMax/apparentMin 时，哨兵值会被 grade_utci 判成
+        # 「极寒(-99) / 极热(99)」4 级，凭空冒出「极热预警」。没有就是没有。
+        _am = [x.get("apparentMax") for x in daily if x.get("apparentMax") is not None]
+        _an = [x.get("apparentMin") for x in daily if x.get("apparentMin") is not None]
+        appMax = max(_am) if _am else None
+        appMin = min(_an) if _an else None
+        vv = [x.get("visMin") for x in daily if x.get("visMin")]
+        visMin = min(vv) if vv else None
+    return {"pHourMax": pH, "snowHourMax": sH, "gust": g, "wind": w,
+            "tmax": tmax, "tmin": tmin, "appMax": appMax, "appMin": appMin, "visMin": visMin}
 
-    def _vals(k):
-        return [v for v in (h.get(k) or [])[:n] if isinstance(v, (int, float))]
 
-    def _mx(k, s=1.0):
-        v = _vals(k); return round(max(v) * s, 2) if v else None
+def h48_precip(d):
+    """未来 48 小时（起始小时起连续 48 个逐小时）累计降水 mm。
 
-    def _mn(k):
-        v = _vals(k); return round(min(v), 2) if v else None
-
-    def _sm(k):
-        v = _vals(k); return round(sum(v), 1) if v else None
-
-    return {"pHourMax": _mx("precipitation"),
-            "snowHourMax": _mx("snowfall", 10.0),   # cm/h → mm/h
-            "pSum48": _sm("precipitation"),
-            "gust": _mx("wind_gusts_10m"),
-            "wind": _mx("wind_speed_10m"),
-            "tmax": _mx("temperature_2m"),
-            "tmin": _mn("temperature_2m")}
+    与单项目看板 build_dashboard.py 的 pSum48 同源同值，保证 index 与项目页数字一致。
+    **不能用 daily[:2] 两日之和**：hourly 起点是当日整点，48h 窗口横跨 3 个自然日，
+    daily[:2] 会整段漏掉第 3 天。"""
+    h = d.get("hourly", {}) or {}
+    # 新口径 rainfall = rain + showers；旧数据回退 precipitation
+    precip = h.get("rainfall", []) or h.get("precipitation", []) or []
+    if precip:
+        return round(sum(precip[:48]), 1)
+    return round(sum((x.get("precip") or 0) for x in (d.get("daily") or [])[:2]), 1)
 
 
 def build_focus(d, is_eng=False):
@@ -422,88 +400,159 @@ def build_focus(d, is_eng=False):
     # 旧数据缺 peaksNear 时回退到全周期 peaks，避免中断。
     items = []
     if not is_eng:
-        pk = wutan_48h(d)
-        pnm = d.get("peaksNear") or {}
-        # 作业点归属：这些值是「区域包络」（各小时取各点最大），不点名用户无从查起。
-        # 低等级要素（小雨/五级风等）只写事实不点名，>=2 级才标注最不利作业点，避免卡片过长。
-        def _at(pt):
-            return f"（{pt}）" if pt else ""
-
-        if (pk.get("pSum48") or 0) >= 2 or (pnm.get("pSum48Top") or 0) >= 2:
-            # ⚠️ 用「最大单点 48h 累计」而非区域包络 pSum48 当headline 数字：
-            # pSum48 是「各小时取各点最大再累加」，最大可跨点，没有任何单个作业点真能拿到该值
-            # （实测藏北冻土 包络 18.7mm vs 最大单点仅 5.3mm，差 3.5 倍），报出来会误导。
-            # 包络 pSum48 仍作为风险等级的保守输入（不外露）。
-            _top = pnm.get("pSum48Top")
-            if _top is None:
-                items.append(f"未来 48 小时累计降水 {round(pk['pSum48'],1)}mm（区域包络）")
-            else:
-                items.append(f"未来 48 小时最大单点累计降水 {round(_top,1)}mm{_at(pnm.get('pSum48Point'))}")
-        # 暴雪须佐证：藏北等项目的暴雪多在 3-14 天远端，peaksNear.snowMax 的逐时尖峰不可靠，
-        # 须 48h 日均降雪 >0 才计入（与 build_near_term_desc 的 snow48 闸门一致）
+        p = d.get("peaksNear") or d.get("peaks", {}) or {}
+        # 物探一个项目有几十个作业点，下面的数值都是**区域包络**（各作业点里最恶劣的）。
+        # 故开头统一说明「取自最不利作业点」，并对主要数值点名具体作业点，
+        # 否则现场看到"累计降水 59.9mm"无法查证是哪个点。
+        wpts = p.get("worstPts") or {}
+        def wp(k):
+            w = wpts.get(k) or {}
+            return w.get("loc") or ""
+        # 累计降水：只报「大雨及以上」（>=25mm），量级小的由「最需注意」项的原因承载，
+        # 避免"最需注意（大雨 5.6mm/h）"后面又跟一句"累计降水 47.8mm"重复。
+        # 显示门槛与项目页横幅一致（>=0.5mm 才算有降水）。
+        # ⚠️ 累计降水 headline 必须用「最大单点 48h 累计」(pSum48Top)，不能用区域包络 pSum48：
+        # pSum48 是「各小时取各点最大再累加」，最大可跨点，没有任何单个作业点真能得到该值
+        # （实测藏北冻土 包络 18.7mm vs 最大单点仅 5.3mm，差 3.5 倍），报包络会严重误导。
+        _p_top = p.get("pSum48Top")
+        if _p_top is None:
+            _p_top = p.get("pSum48")
+        if (_p_top or 0) >= 25:
+            at = wp("sum48")
+            items.append(f"累计降水 {round(_p_top,1)}mm" + (f"（{at}）" if at else ""))
+        # 七要素预警（2026-10-16）：降水/降雪取小时峰值(mm/h)，均风/阵风取峰值(m/s)，
+        # 体感 UTCI 取 48h 最冷/最热，能见度取 48h 最低。plain 温度不再单独预警。
+        # index 汇总文字只报等级名（不带 mm/h、m/s、℃ 阈值数值，避免一眼全是数字）
+        # 暴雪预警须以「日均降雪 48h 合计 > 0」佐证：藏北等项目的暴雪多在 3-14 天远端，
+        # peaksNear.snowMax 的逐时尖峰不可靠，不佐证则按 48h-only 规则剔除（与
+        # build_near_term_desc 的 snow48 闸门一致），避免远端暴雪污染「未来 48 小时」卡片焦点。
         snow48 = sum(((x.get("snow") or 0) for x in (d.get("daily") or [])[:2]))
-        snow_max = pk.get("snowMax") if snow48 > 0 else 0
-        _lv = [
-            (rain_alert(pk.get("pHourMax")), RAIN_ALERT_S, pnm.get("pHourPoint")),
-            (snow_alert(snow_max),                SNOW_ALERT_S, pnm.get("snowPoint")),
-            (gust_alert(pk.get("gust")),         GUST_ALERT_S, pnm.get("gustPoint")),
-            (thigh_alert(pk.get("tmax")),         THIGH_ALERT_S, pnm.get("tmaxPoint")),
-            (tlow_alert(pk.get("tmin")),          TLOW_ALERT_S, pnm.get("tminPoint")),
-        ]
-        for _lvv, _tbl, _pt in _lv:
-            if _lvv:
-                items.append(_tbl[_lvv] + (_at(_pt) if _lvv >= 2 else ""))
+        # 逐要素预警等级名 + 达成该等级的最不利作业点（worstPts 键与要素 kind 对应）。
+        # 走 project_alert_tuples 拿 (kind, lv, lbl)，避免靠「风/雨」等子串猜要素
+        # （新口径里「劲风五级预警」在均风与阵风两个字典中同名，子串判定会张冠李戴）。
+        _WP_OF = {"rain": ("sum48", "hour"), "snow": ("snow", "hour"),
+                  "gust": ("gust",), "wind": ("wind",),
+                  "utci": ("appMax", "appMin"), "vis": ("visMin",)}
+        for kind, lv, lbl in project_alert_tuples(d, is_eng=False):
+            if kind == "snow" and snow48 <= 0:
+                continue
+            at = ""
+            for _k in _WP_OF.get(kind, ()):
+                at = wp(_k)
+                if at:
+                    break
+            # **只保留 2 级及以上预警名**（用户 2026-10-09：概述只说最核心的）。
+            # 小雨/小雪/五级风等低等级要素的事实由「最需注意」那一项的原因承载，
+            # 不再重复成"XX预警（点位）"，避免同一句话说两遍。
+            if _FOCUS_RANK.get(lbl, 99) <= 4:
+                items.append(lbl + (f"（{at}）" if at else ""))
     else:
         # 工程数据：统一按 48h 口径现算（hourly[:48]/daily[:2]），不用整窗 summary 的 14 天峰值
         if d.get("hourly") or d.get("daily"):
             pk = peaks_48h_eng(d)
-            cum = pk.get("pSum48") or 0.0
-            if cum >= 2:  # 同上：< 2mm 不提
+            cum = h48_precip(d)  # 48h 逐小时窗口累加（与项目页同源），不用 daily[:2]
+            if cum >= 0.5:  # 显示门槛与项目页一致（>=0.5mm 才写）
                 items.append(f"未来 48 小时累计降水 {round(cum,1)}mm")
             items += alert_items(pk.get("pHourMax"), pk.get("snowHourMax"),
-                                 pk.get("gust"), pk.get("tmax"), pk.get("tmin"),
+                                 pk.get("gust"), pk.get("wind"),
+                                 pk.get("appMax"), pk.get("appMin"), pk.get("visMin"),
                                  verbose=False)
         else:
-            # 兜底：极旧数据无 hourly/daily，才退回 summary
+            # 兜底：极旧数据无 hourly/daily，才退回 summary（无风/体感/能见度，传 None）
             s = d.get("summary", {}) or {}
             if s.get("pHourMax") or s.get("snowHourMax") or s.get("maxGust") or s.get("maxTemp") is not None or s.get("minTemp") is not None:
                 items += alert_items(s.get("pHourMax"), s.get("snowHourMax"),
-                                     s.get("maxGust"), s.get("maxTemp"), s.get("minTemp"),
+                                     s.get("maxGust"), None, None, None, None,
                                      verbose=False)
     if not items:
         # 用户规则（2026-10-09）：兜底只表达「天气平稳」，不再罗列
-        # 「无明显降水 / 无大风」这类否定式描述
+        # 「无明显降水 / 无大风」这类否定式描述。
+        # 但若已有"最需注意"作业点，仍要把该点说出来（它本身就是核心信息）。
+        _pn0 = d.get("peaksNear") or {}
+        _rp0 = (_pn0.get("riskPts") or []) if not is_eng else []
+        if _rp0:
+            return f"{_rp0[0]['label']} 最需注意（{_rp0[0]['why']}）"
         return "未来 2 天天气平稳"
-    return "；".join(items[:4])
+    # **只保留最核心的 1~2 项**（用户 2026-10-09：概述不要面面俱到）——
+    # 按等级排序取前二，其余要素在项目页关键指标里能逐项看到。
+    # ⚠️ 排序键必须剥掉「（作业点X）」后缀再查 _FOCUS_RANK——带后缀的字符串在表里查不到，
+    # 会全部落到默认 9，排序退化成「插入顺序」，概述就会挑错最核心的两项。
+    # ⚠️ 方向：_FOCUS_RANK 数字越小越严重，故升序（小的在前）=「最严重的在前」。
+    # 累计降水是量化 headline，给 0 级权重固定排最前（沿用既有呈现顺序）。
+    def _rank_of(t):
+        base = t.split("（")[0]
+        if "累计降水" in base:
+            return 0
+        return _FOCUS_RANK.get(base, 9)
+    items.sort(key=_rank_of)
+    _pn = d.get("peaksNear") or {}
+    _rp = (_pn.get("riskPts") or []) if not is_eng else []
+    if _rp:
+        # 有"最需注意"点时，它的 why 已含该点的关键数值/要素，
+        # 后面的要素条目若与 why 重复（同一要素关键词）就跳过，避免同一句话说两遍。
+        _why = _rp[0].get("why", "")
+        def _dup(txt, why):
+            for k in ("降水", "雨", "风", "温", "雪", "能见", "体感", "寒", "热"):
+                if k in txt and k in why:
+                    return True
+            return False
+        items = [t for t in items if not _dup(t, _why)]
+    body = "；".join(items[:2])
+    # 物探：点出最需注意的作业点（完整清单在项目页地图/指标里，避免卡片文字过长）
+    if not is_eng:
+        if _rp:
+            body = f"{_rp[0]['label']} 最需注意（{_rp[0]['why']}）" + ("；" + body if body else "")
+        else:
+            body = "（区域最不利作业点）" + body
+    return body
 
-def sev_eng_recent(pk):
-    """石油工程数据的风险等级（未来 48 小时口径）。
+def sev_eng_recent(daily2, ph=0.0, cum48=None, el48=None):
+    """石油工程数据的风险等级（近 2 天口径）。
 
     工程 *_data.json 的 meta 里没有 sevNear/sev（物探才有），必须在汇总时现算。
-    全部要素取自 peaks_48h_eng()（hourly[:48] 逐小时窗口），阈值与
-    weather-engineering-index 的 sev_of_recent 保持一致，避免两条线的卡片评级出现分歧。
+    阈值与 weather-engineering-index 的 sev_of_recent 保持一致，避免两条线的
+    卡片评级出现分歧：只取 daily 前 2 天聚合。
 
-    用户规则（2026-10-09）：明显降雨（中雨及以上，即 >=1.5mm/h）即至少定为「需关注」；
-    降雪/阵风、高低温仍按各自的等级判定，不因这条降雨规则被额外抬级。
+    ph = 48h 内最大小时降水（mm/h）。用户规则（2026-10-09）：明显降雨（中雨及以上，
+    即 >=1.5mm/h）即至少定为「需关注」；降雪/阵风/高低温仍按各自的等级判定，
+    不因这条降雨规则被额外抬级。
     """
-    pk = pk or {}
-    ph   = pk.get("pHourMax") or 0.0
-    cum  = pk.get("pSum48") or 0.0
-    gust = pk.get("gust") or 0.0
-    wind = pk.get("wind") or 0.0
-    tmax = pk.get("tmax")
-    tmin = pk.get("tmin")
-    if gust >= 20.8 or (tmax is not None and tmax >= 38) or cum >= 150:
+    if not daily2:
+        return 0
+    pmax = max((d.get("precip", 0) for d in daily2), default=0)
+    # 风/温取 48h 逐小时窗口极值（el48，见 peaks_48h_eng），不用 daily[:2]、不用全窗 summary
+    if el48:
+        gust = el48.get("gust") or 0.0
+        wind = el48.get("wind") or 0.0
+        tmax = el48.get("tmax") if el48.get("tmax") is not None else -99
+        tmin = el48.get("tmin") if el48.get("tmin") is not None else 99
+    else:
+        gust = max((d.get("gustMax", 0) for d in daily2), default=0)
+        wind = max((d.get("windMax", 0) for d in daily2), default=0)
+        tmax = max((d.get("tempMax", -99) for d in daily2), default=-99)
+        tmin = min((d.get("tempMin", 99) for d in daily2), default=99)
+    cum = cum48 if cum48 is not None else sum(d.get("precip", 0) for d in daily2)
+    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150:
         sev = 3
-    elif (ph >= 10 or gust >= 17.2 or (tmax is not None and tmax >= 35)
-          or (tmin is not None and tmin <= -5) or cum >= 80):
+    elif pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80:
         sev = 2
-    elif ph >= 5 or wind >= 10.8 or gust >= 13.9 or (tmin is not None and tmin <= 0) or cum >= 20:
+    elif pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20:
         sev = 1
     else:
         sev = 0
-    if rain_alert(ph) >= 2:
+    # 明显降雨（中雨及以上）至少「需关注」
+    if JW.grade_rain(ph) >= 2:
         sev = max(sev, 1)
+    # 2026-10-16：新增要素（均风 / 体感 UTCI / 能见度 / 降雪）的 48h 等级并入综合风险，
+    # 与物探看板、工程 index 共用 jozzonwx 同一套分级，杜绝口径漂移。
+    peaks = {"rain": ph or 0.0,
+             "snow": (el48 or {}).get("snowHourMax") or 0.0,
+             "wind": (el48 or {}).get("wind") or 0.0,
+             "gust": (el48 or {}).get("gust") or 0.0,
+             "appMax": (el48 or {}).get("appMax"),
+             "appMin": (el48 or {}).get("appMin"),
+             "visMin": (el48 or {}).get("visMin")}
+    sev = max(sev, JW.sev_from_levels(JW.el_levels(peaks)))
     return sev
 
 
@@ -528,17 +577,36 @@ def load_rows(dd, group, badge, pattern="*_data.json"):
         short = short_pin(pin)
         is_eng = (pattern == "*.json")
         alerts = project_alert_tuples(d, is_eng=is_eng)
-        # 风险评级（高度警惕/重点关注/需关注/整体适宜）按「未来 48 小时」口径：
-        # 全部要素取 hourly[:48] 逐小时窗口现算（不再读 daily[:2] 两个自然日，
-        # 也不用旧 _data.json 里 daily 口径的 sevNear），与单项目看板同源同阈值。
-        pk48 = peaks_48h_eng(d) if is_eng else wutan_48h(d)
-        sev = sev_eng_recent(pk48) if is_eng else sev_wutan_48h(pk48)
-        # 兜底一致性：卡片焦点会展示各要素预警（小雨、五级风也写），但等级不因低等级抬升；
-        # 中雨及以上或任一 3 级预警时，等级至少给「需关注」，避免出现
-        # 「整体适宜」却挂着「疾风七级预警」的自相矛盾。
+        # 风险评级（高度警惕/重点关注/需关注/整体适宜）按「未来 48 小时（近 2 天）」口径，
+        # 与看板 t1「重点提示」横幅保持一致；旧数据缺 sevNear 时回退到全周期 sev，避免中断。
+        sev = m.get("sevNear", m.get("sev"))
+        if sev is None:
+            # 旧数据缺 sevNear（2026-10-16 前的产物）：按七要素 48h 峰值现算，
+            # 与 build_dashboard 的 _env_sev 同一套 JW 分级，避免沿用旧口径造成漂移。
+            if is_eng:
+                pk48 = peaks_48h_eng(d)
+                sev = sev_eng_recent((d.get("daily") or [])[:2],
+                                     (pk48 or {}).get("pHourMax") or 0.0,
+                                     cum48=h48_precip(d), el48=pk48)
+            else:
+                pn = d.get("peaksNear") or d.get("peaks", {}) or {}
+                sev = JW.sev_from_levels(JW.el_levels({
+                    "rain": pn.get("pHourMax") or 0, "snow": pn.get("snowMax") or 0,
+                    "wind": pn.get("windMax") or 0, "gust": pn.get("gustMax") or 0,
+                    "appMax": pn.get("appMax"), "appMin": pn.get("appMin"),
+                    "visMin": pn.get("visMin"),
+                }))
+        sev = sev or 0
+        # 用户规则（2026-10-09）：有明显降雨（中雨及以上）即至少定为「需关注」；
+        # 降雪、阵风、高/低温本身不参与这条抬级，仍按各自风险等级判定。
         rain_lv = max((lv for k, lv, _ in alerts if k == "rain"), default=0)
         max_lv = max((lv for _, lv, _ in alerts), default=0)
-        if (rain_lv >= 2 or max_lv >= 3) and sev < 1:
+        # 兜底一致性：卡片焦点只展示 3 级及以上要素预警，若某项目确实触发了 3 级预警
+        # （如七级阵风、暴雨级降水，旧 _sev_of 只看持续风 windMax 会判不出等级），等级至少给「需关注」，
+        # 避免出现「整体适宜」却挂着「疾风七级预警」的自相矛盾。
+        # 注意：仅 3 级及以上（暴雨/七级风）才抬级——中雨(2 级)本身不足以抬到「需关注」，
+        # 否则会出现「需关注」徽章配「未来 2 天天气平稳」描述的矛盾（如南郑 1.5mm/h 中雨）。
+        if (rain_lv >= 3 or max_lv >= 3) and sev < 1:
             sev = 1
         rows.append({
             "pin": pin, "short": short, "name": m["name"], "sev": sev,
@@ -707,11 +775,11 @@ if __name__ == "__main__":
             rows=wt,
             out_path=os.path.join(BEIDOU, "wutan", "html", "index.html"),
         )
-    if args.only in (None, "engineering"):
-        page(
-            title="中石化北斗运营中心 · 石油工程项目天气看板",
-            sub_title=f"石油工程 {len(zj)} 个项目",
-            label="石油工程",
-            rows=zj,
-            out_path=os.path.join(BEIDOU, "engineering", "html", "index.html"),
-        )
+    # 石油工程侧**不再由本脚本生成**：本脚本的卡片只显示「三级单位+点位名」平铺，
+    # 没有按「一级+二级单位」分组折叠（用户 2026-10-09 要求：按单位划分，不要全平铺）。
+    # 工程侧 index 由 weather-engineering-index 的 build_points_index.py 生成，
+    # 它按 level1+level2 分组折叠。两者写同一个文件，本脚本跑在后面会覆盖掉分组版。
+    if args.only == "engineering":
+        print("  跳过工程侧：工程 index 请用 weather-engineering-index/build_points_index.py 生成（保留按单位分组）")
+    elif args.only is None:
+        print("  跳过工程侧 index（如需重建请跑 weather-engineering-index/build_points_index.py，保留按单位分组）")

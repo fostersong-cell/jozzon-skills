@@ -1,7 +1,10 @@
 /* 页面级校验：石油工程点位看板的小时级短时降水（jsdom）
  * 用法：NODE_PATH=... node check_rain_eng_page.js <点位看板.html>
  * 1) 原样加载：无运行期错误、读数框用 mm/h
- * 2) 把 48h 降水序列整体抬到 9.9mm/h：图上应画出 3 条阈值线 + 标签
+ * 2) 把 48h 降水序列整体抬到 20mm/h：图上应画出 3 条阈值线 + 标签
+ *
+ * ⚠️ 2026-10-16 修订：48h 载荷键是 `rainfall`（曾误写 `precip`，会让 JS 的 CH.rainfall
+ *    变 undefined → 整块图空白）；阈值三档也由 2/5/10 改为 3/6/15。改阈值只改 jozzonwx。
  */
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
@@ -47,13 +50,13 @@ setTimeout(() => {
   const vb = r.d.getElementById("hval");
   ok(vb && /mm\/h/.test(vb.textContent), "读数框降水单位 mm/h", vb ? vb.textContent.trim().slice(0, 60) : "null");
 
-  console.log("== 抬到 12mm/h（48h 逐小时图，量程覆盖到 10mm/h 阈值）");
-  // 只改 precip 数组的数值（保留长度），并把 ptype 置 0
-  const m = base.match(/precip:(\[[0-9.,\s]+\])/);
-  ok(!!m, "找到 48h 降水数组");
+  console.log("== 抬到 20mm/h（48h 逐小时图，量程覆盖 3/6/15 三条阈值线）");
+  // 只改 rainfall 数组的数值（保留长度）
+  const m = base.match(/rainfall:(\[[0-9.,\s]+\])/);
+  ok(!!m, "找到 48h 降水数组（载荷键 rainfall）");
   if (m) {
     const n = m[1].split(",").length;
-    const lifted = "precip:[" + Array(n).fill("12").join(", ") + "]";
+    const lifted = "rainfall:[" + Array(n).fill("20").join(", ") + "]";
     const html2 = base.replace(m[0], lifted);
     let r2 = boot(html2);
     setTimeout(() => {
@@ -62,7 +65,7 @@ setTimeout(() => {
       const lines = Array.from(svg.querySelectorAll("line")).filter(l => l.getAttribute("stroke-dasharray") === "5 4");
       ok(lines.length >= 3, "画出 3 条阈值线", lines.length + " 条");
       const txts = Array.from(svg.querySelectorAll("text")).map(t => t.textContent);
-      ["大雨 2 mm/h", "暴雨 5 mm/h", "大暴雨 10 mm/h"].forEach(t =>
+      ["大雨 3 mm/h", "暴雨 6 mm/h", "大暴雨 15 mm/h"].forEach(t =>
         ok(txts.indexOf(t) >= 0, "阈值线标签 " + t, ""));
       // 触发拖动/点击选时，读数框仍为 mm/h
       const ev = new r2.w.MouseEvent("pointerdown", { clientX: 300, clientY: 100, bubbles: true });

@@ -55,6 +55,7 @@ rsync -a \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
   --exclude '*.bak-*' \
+  --exclude 'config.json' \
   "$SKILLS/" "$REPO/"
 
 cd "$REPO"

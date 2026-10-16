@@ -64,9 +64,9 @@ description: 物探项目2周天气看板「多项目总览页 index.html」生�
 ### 未来 2 天（48 小时）风险描述
 
 - 模块常量 `NEAR_DAYS = 2`：只统计每个 `_data.json` 的 `daily` 前 2 天与逐点 `series` 前 2 天的降水 / 阵风 / 低温极值。
-- **超出该 2 天窗口的极端暴雨，仅以「周中后期极端暴雨（如 …）已超出可靠预报范围，暂不纳入，临近时再提示」一句话点出，置于近 2 天风险描述之后，不作为当前主风险。** 理由：远预报不可靠（用户 2026-09-15 明确口径）。
-- **排序约定（2026-09-19）**：`build_near_term_desc()` 输出顺序为「近 2 天风险详情（标题 + 大风低温 + 强降水处置）」先行，「周中后期远预报一句话」置后；切忌把远预报放在近 2 天风险之前。
-- 近窗口内的主风险按「大风低温（阵风 ≥17.2m/s 或最低温 ≤0℃）」与「强降水（单日 ≥25mm）」两类归纳，并给出处置提示。
+- **3-14 天（第 3 天起）远端提醒不在本总览呈现**（2026-10-09 用户定）：原先那句「周中后期极端暴雨…临近时再提示」已删除，远端提醒只在各单项目看板内出现。
+- **降雪须佐证**：`peaksNear.snowMax` 是逐时尖峰，藏北等项目的暴雪实为 3-14 天远端；`build_near_term_desc()` 与 `build_focus()` 两处均加 `snow48` 闸门 —— 只有 48h 日均降雪合计 >0 才计入 48h 风险。
+- 近窗口内的主风险按 **降雨 / 降雪 / 风（均风+阵风合并） / 体感极端 / 低能见度** 五类归纳（`build_near_term_desc()` 的 groups），每类最多点名 6 个项目，并给出处置提示。
 - 文案由 `build_near_term_desc()` 自动生成，随数据重算，无需手写。
 
 ### 预报跨度标签（动态，避免错标）
@@ -100,9 +100,12 @@ description: 物探项目2周天气看板「多项目总览页 index.html」生�
 
 ## 关键实现要点
 
-- **数据来源**：只读 `*_data.json` 的 `meta`(name/sev/sevLabel/**sevNear**/sevLabelNear/start/end/npts/kind) + `peaksNear`(gustMax/tmax/tmin/pMax/pMaxDay/focusStart/focusEnd/focusTotal，缺则回退 `peaks`) + `daily`(逐日降水) + `points[].series`(逐日风/温)。
-- **风险评级口径**：卡片徽章/颜色/排序所用的「高度警惕」等评级取自 `meta.sevNear`（**未来 48 小时 / 近 2 天**口径），与看板 t1「重点提示」横幅保持一致；旧数据缺 `sevNear` 时回退到全周期 `sev`。`build_near_term_desc()` 与之同源（NEAR_DAYS=2）。
-- **重点提示复现**：`build_focus()` 重建看板顶部的「主要关注」文本，阈值 gustMax≥17.2(≥8级)、tmax≥35(高温)、tmin≤0(结冰)、pMax≥50(暴雨)/≥25(大雨)、focusStart(连续降雨累计)；无则「本期未触发极端天气预警阈值，整体适宜作业」。最多 3 条。**该文本同样取自 `peaksNear`（48 小时口径）**，与评级一致，不再用全周期 peaks。
+- **数据来源**：只读 `*_data.json` 的 `meta`(name/sev/sevLabel/**sevNear**/sevLabelNear/start/end/npts/kind) + `peaksNear`(**七要素** pHourMax/snowMax/gustMax/**windMax**/tmax/tmin/**appMax**/**appMin**/**visMin**/pSum48/**pSum48Top**/worstPts/riskPts，缺则回退 `peaks`) + `daily`(逐日降水/降雪) + `points[].series`(逐日风/温)。
+- **风险评级口径**：卡片徽章/颜色/排序所用的「高度警惕」等评级取自 `meta.sevNear`（**未来 48 小时 / 近 2 天**口径），与看板 t1「重点提示」横幅保持一致；旧数据缺 `sevNear` 时**用 `jozzonwx` 的七要素现算**（`JW.sev_from_levels(JW.el_levels(peaksNear))`），不再沿用旧的全周期 `sev`。`build_near_term_desc()` 与之同源（NEAR_DAYS=2）。
+- **分级集中化（2026-10-16）**：本脚本**不再自带任何阈值字典**，降雨/降雪/均风/阵风/体感(UTCI)/能见度六类分级与预警文本统一引用共享模块 `weather-common/scripts/jozzonwx.py`（`JW.grade_*` / `JW.*_ALERT_S`），与 `weather-wutan-html`（单项目看板）、`weather-engineering-*`（石油工程）**零漂移**。改动阈值只改 jozzonwx 一处。
+- **七要素与旧口径差异**：`降雨 = rain + showers`；`降雪` 已是 mm/h（**不再 ×10**）；新增 `均风 wind_speed_10m`、`体感 apparent_temperature(UTCI，冷/热双向)`、`能见度 visibility(m)`；**plain 温度只展示、不再单独预警**（舒适度改由体感 UTCI 承担）。
+- **重点提示复现**：`build_focus()` 重建看板顶部的「主要关注」文本，取 `peaksNear` 的 48 小时峰值套七要素阈值；无则「未来 2 天天气平稳」。**只留最核心 1~2 项**（`_FOCUS_RANK` 升序取前二，数字越小越严重；排序键须先剥掉「（作业点X）」后缀再查表，否则全部落到默认值、排序退化成插入顺序）。
+- **累计降水必须用 `pSum48Top`**：`pSum48` 是「各小时取各点最大再累加」的区域包络，**没有任何单个作业点真能得到该值**（实测藏北冻土 包络 18.7mm vs 最大单点 5.3mm），报包络会严重误导；`pSum48` 只作风险等级输入、不外露。
 - **排序**：`rows.sort(key=lambda r: (-r["sev"], r["name"]))`，其中 `r["sev"]` 即 48 小时评级 sevNear，同级按名称。
 - **链接相对路径**：卡片链接只写文件名（`{pin}.html`），因 `index.html` 与各看板 HTML 同目录。
 - **sev 配色**：0=#2E8B57（整体适宜）/ 1=#E0A92C（需关注）/ 2=#E0822C（重点关注）/ 3=#C0392B（高度警惕）。
@@ -113,7 +116,7 @@ description: 物探项目2周天气看板「多项目总览页 index.html」生�
 ## 与「重跑」的关系
 
 项目约定（2026-09-17）：说「重跑」即把物探的 **数据 + HTML + index + 2 天风险汇总** 一次性全部刷新。
-该流程由 `beidou/rerun_wutan.py` 编排 —— 它依次调用 10 个项目的取数，末尾**自动调用本 skill 的 `gen_subindex.py --only wutan`** 重建总览。因此日常无需单独手工重建 index；只有在**项目清单变更**（新增/改名项目）或**单独要求同步总览**时才直接运行本 skill。
+该流程由 `beidou/rerun_wutan.py` 编排 —— 它依次调用全部项目的取数（2026-10-16 起为 **11 个**），末尾**自动调用本 skill 的 `gen_subindex.py --only wutan`** 重建总览。因此日常无需单独手工重建 index；只有在**项目清单变更**（新增/改名项目）或**单独要求同步总览**时才直接运行本 skill。
 
 ## 通用注意事项
 

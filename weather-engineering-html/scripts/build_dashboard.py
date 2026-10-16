@@ -524,10 +524,41 @@ document.querySelectorAll('.tabbtn').forEach(b=>b.addEventListener('click',()=>s
 #  内嵌中文字体子集
 # ======================================================================
 def embed_font(html):
+    """嵌入中文字体子集（跨平台：自动按操作系统挑选系统中文字体）。失败时优雅降级。"""
     try:
         from fontTools.ttLib import TTFont
         from fontTools import subset as ftsubset
-        fnt = TTFont("/System/Library/Fonts/Hiragino Sans GB.ttc", fontNumber=0)
+        _cands = []
+        if sys.platform.startswith("win") or os.name == "nt":
+            _cands = [
+                ("C:/Windows/Fonts/msyh.ttc", 0),
+                ("C:/Windows/Fonts/msyh.ttc", 1),
+                ("C:/Windows/Fonts/simsun.ttc", 0),
+                ("C:/Windows/Fonts/msjh.ttc", 0),
+                ("C:/Windows/Fonts/simhei.ttf", 0),
+            ]
+        elif sys.platform == "darwin":
+            _cands = [
+                ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+                ("/System/Library/Fonts/STHeiti Light.ttc", 0),
+                ("/System/Library/Fonts/PingFang.ttc", 0),
+            ]
+        else:
+            _cands = [
+                ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+                ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+                ("/usr/share/fonts/truetype/arphic/uming.ttc", 0),
+            ]
+        _fnt = None
+        for _fp, _fn in _cands:
+            if os.path.exists(_fp):
+                try:
+                    _fnt = TTFont(_fp, fontNumber=_fn); break
+                except Exception:
+                    _fnt = None
+        if _fnt is None:
+            raise RuntimeError("no CJK system font found on this platform")
+        fnt = _fnt
         chars = "".join(sorted(set(html)))
         ss = ftsubset.Subsetter(); ss.populate(text=chars); ss.subset(fnt)
         buf = io.BytesIO(); fnt.save(buf)

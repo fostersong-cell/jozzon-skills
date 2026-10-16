@@ -34,7 +34,7 @@ description: 石油工程（钻井/管线点位）天气看板「未来 2 周」
 
 | 需求 | 用哪个技能 |
 |---|---|
-| 采集/刷新点位天气数据（Open-Meteo 取数，未来 2 周） | `weather-engineering-data` |
+| 采集/刷新点位天气数据（按 `ta_id` 调 jozzon-mcp 取数，未来 2 周） | `weather-engineering-data` |
 | 渲染单个点位的天气看板 HTML | `weather-engineering-data` |
 | **生成/重建点位目录总览 index.html（point）** | **本技能 `weather-engineering-index`**（`build_points_index.py`） |
 | **生成井位地图 index.html（well）** | **本技能 `weather-engineering-index`**（`build_wells_index.py`） |
@@ -152,12 +152,19 @@ python3 <SKILLS>/weather-engineering-index/scripts/build_wells_index.py \
 
 ## 风险分级口径（沿用 _sev 阈值）
 
-| 等级 | 含义 | 触发（任一） |
-|---|---|---|
-| 0 绿 | 整体适宜 | — |
-| 1 黄 | 需关注 | 日降水 ≥12mm / 风速 ≥10.8 / 最低温 ≤0 / 2 天累计 ≥20mm |
-| 2 橙 | 重点关注 | 日降水 ≥50mm / 阵风 ≥17.2 / 最高温 ≥35 / 最低温 ≤-5 / 2 天累计 ≥80mm |
-| 3 红 | 高度警惕 | 日降水 ≥80mm / 阵风 ≥20.8 / 最高温 ≥38 / 2 天累计 ≥150mm |
+**两套窗口，不许混用**（与 `weather-engineering-data` 单点位看板同源）：
+
+- **全窗 14 天**（`sev_of(daily, summary)`）——只用于 index 顶部的**等级分布计数**。「累计」口径为 `focus = Σ(日降水≥10mm 的日子)`（连续降雨累计）。
+- **未来 48 小时**（`sev_of_recent(daily2, ph, cum48, el48)`）——用于「未来 2 天风险」短描述与点名井位。`ph`＝48h 内最大小时降水（mm/h）、`cum48`＝48h 逐小时累计（`h48_precip`）、`el48`＝48h 窗口的阵风/均风/最高温/最低温（`peaks_48h`，**不是 summary 的 14 天极值**）。
+
+| 等级 | 含义 | 全窗 14 天触发（任一） | 48h 触发（任一） |
+|---|---|---|---|
+| 0 绿 | 整体适宜 | — | — |
+| 1 黄 | 需关注 | 日降水 ≥12mm / 均风 ≥10.8 / 最低温 ≤0 / 连续累计 ≥30mm | 小时降水 ≥5mm/h / 日降水 ≥12mm / 均风 ≥10.8 / 最低温 ≤0 / 48h 累计 ≥20mm |
+| 2 橙 | 重点关注 | 日降水 ≥50mm / 阵风 ≥17.2 / 最高温 ≥35 / 最低温 ≤-5 / 连续累计 ≥80mm | 小时降水 ≥10mm/h / 日降水 ≥50mm / 阵风 ≥17.2 / 最高温 ≥35 / 最低温 ≤-5 / 48h 累计 ≥80mm |
+| 3 红 | 高度警惕 | 日降水 ≥80mm / 阵风 ≥20.8 / 最高温 ≥38 / 连续累计 ≥150mm | 日降水 ≥80mm / 阵风 ≥20.8 / 最高温 ≥38 / 48h 累计 ≥150mm |
+
+> **抬级与并级（2026-10-09 / 2026-10-16）**：① 48h 有明显降雨（≥1.5mm/h）即至少「需关注」；② 新增要素（降雪 / 均风 / 体感 UTCI / 能见度）48h 等级经 `jozzonwx.el_levels()` + `sev_from_levels()` 并入综合等级，与单点位看板、物探看板共用 `jozzonwx` 同一套分级，杜绝口径漂移。
 
 ## 注意事项
 

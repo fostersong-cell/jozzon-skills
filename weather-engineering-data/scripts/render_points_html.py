@@ -7,7 +7,8 @@ render_points_html.py —— 由 engineering/data/*.json（逐点天气数据）
 输出：
   * engineering/html/{拼音}.html —— 每个点位一张独立无地图看板，分 3 个版面（Tab）：
       - 重点关注：重点关注横幅 + 关键指标四宫格 + 风险面板 + 作业影响建议
-      - 未来两周：3 个逐日图表（降水柱 / 气温双线 / 阵风·均风双线，服务端预渲染 SVG），
+      - 未来两周：逐日图表（降水柱【降雨 + 降雪并列】/ 气温双线【含体感虚线】/
+                  阵风·均风双线 / 能见度单线，服务端预渲染 SVG），
                   **可点击图表选日期**并在图上显示带浅底背景的数值框
       - 未来48小时：逐小时图（**点击 / 拖动图表选时刻**，已无独立时间轴滑块），
                   **图上（g.hread）与图下（#hval）同时显示该时刻各要素值**，
@@ -19,6 +20,12 @@ render_points_html.py —— 由 engineering/data/*.json（逐点天气数据）
 风险等级沿用 weather-engineering-html 的 _sev 阈值（0绿/1黄/2橙/3红）。
 """
 import os, json, glob, sys, base64, html as _html
+
+# 共享取数 + 分级模块（jozzon-mcp 九章雷电网）
+_COMMON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "weather-common", "scripts")
+if os.path.isdir(_COMMON):
+    sys.path.insert(0, os.path.abspath(_COMMON))
+import jozzonwx as JW
 
 SEV_LABEL = {0: "整体适宜", 1: "需关注", 2: "重点关注", 3: "高度警惕"}
 SEV_COLOR = {0: "#2E8B57", 1: "#E0A92C", 2: "#E0822C", 3: "#C0392B"}
@@ -104,22 +111,55 @@ def eic(kind, lvl="plain", size=""):
             f' stroke-linecap="round" stroke-linejoin="round">{g}</svg></span>')
 
 def lv_rain(v):
-    """小时级降水分级（mm/h）：≥5 暴雨 danger / ≥2 大雨 warn。与 RAIN_H 一致。"""
+    """小时级降水分级（mm/h）：≥6 暴雨 danger / ≥3 大雨 warn。与 RAIN_H 一致。"""
+    if v is None: return "ok"
     return "danger" if v >= RAIN_H["storm"] else ("warn" if v >= RAIN_H["heavy"] else "ok")
 
 def lv_gust(v):
-    """阵风分级（m/s）：≥17.2 danger（8级） / ≥10.8 warn（6级）。"""
-    return "danger" if v >= 17.2 else ("warn" if v >= 10.8 else "ok")
+    """阵风分级（m/s）：≥17.2 danger（大风八级） / ≥8.0 warn（劲风五级及以上）。"""
+    if v is None: return "ok"
+    if v >= 17.2: return "danger"
+    if v >= 8.0:  return "warn"
+    return "ok"
 
 def lv_temp(v):
-    """温度分级（°C）：≥35 danger（高温） / ≤0 warn（结冰）。"""
-    return "danger" if v >= 35 else ("warn" if v <= 0 else "ok")
+    """温度分级（°C）：≥35 danger（高温） / ≤-5 warn（寒冷）。"""
+    if v is None: return "ok"
+    return "danger" if v >= 35 else ("warn" if v <= -5 else "ok")
+
+def lv2eic(lv):
+    """要素等级（0-4，jozzonwx.grade_* 输出）→ eic 风险色（ok/warn/danger）。"""
+    return "danger" if lv >= 3 else ("warn" if lv >= 2 else "ok")
+
+# ---------- 天气现象分级标签（与用户给定的标准阈值一致）----------
+def gust_lbl(v):
+    """阵风等级标签（m/s）：劲风五级 / 强风六级 / 疾风七级 / 大风八级。"""
+    if v >= 17.2: return "大风八级预警(17.2m/s)"
+    if v >= 13.9: return "疾风七级预警(13.9m/s)"
+    if v >= 10.8: return "强风六级预警(10.8m/s)"
+    if v >= 8.0:  return "劲风五级预警(8.0m/s)"
+    return "阵风正常"
+
+def ltemp_lbl(v):
+    """低温等级标签（°C）：零下5度寒冷 / 零下15度严寒 / 零下25度极寒。"""
+    if v <= -25: return "零下25度极寒预警（零下25度）"
+    if v <= -15: return "零下15度严寒预警（零下15度）"
+    if v <= -5:  return "零下5度寒冷预警（零下5度）"
+    return "温度正常"
+
+def htemp_lbl(v):
+    """高温等级标签（°C）：35度高温 / 37度酷热 / 40度极端高温。"""
+    if v >= 40: return "40度极端高温预警（40度）"
+    if v >= 37: return "37度酷热预警（37度）"
+    if v >= 35: return "35度高温预警（35度）"
+    return "温度正常"
 
 # ---------- 小时级短时降水阈值（mm/h）----------
 # 只作用于「未来 48 小时」口径，与物探看板 weather-wutan-html 的 RAIN_H 完全一致：
-#   >2 mm/h 大雨 / >5 mm/h 暴雨 / >10 mm/h 大暴雨
+#   ≥3 mm/h 大雨 / ≥6 mm/h 暴雨 / ≥15 mm/h 大暴雨
+#   （对应标准「大雨预警(3mm/h) / 暴雨预警(6mm/h) / 大暴雨预警(15mm/h)」）
 # 「未来 两周」逐日图与关键指标仍按日累计 25/50mm，两套口径不混用。
-RAIN_H = {"heavy": 2.0, "storm": 5.0, "torrent": 10.0}
+RAIN_H = {"heavy": 3.0, "storm": 6.0, "torrent": 15.0}
 
 def rain_hour_label(v):
     """小时级降水的等级文案（供卡片 / 影响建议 / 横幅复用）。"""
@@ -130,58 +170,173 @@ def rain_hour_label(v):
 
 def phour_max(hourly48):
     """近 48 小时最大小时降水（mm/h）。hourly48 为已截断的前 48 小時逐小时数据。"""
-    pr = hourly48.get("precipitation") or []
+    pr = hourly48.get("rainfall") or []
     return round(max(pr) if pr else 0.0, 1)
 
 # ---------- 风险等级（沿用 weather-engineering-html 的 _sev 阈值） ----------
 def sev_of(daily, s):
-    pmax = max((d["precip"] for d in daily), default=0)
+    pmax = max((d["rainfall"] for d in daily), default=0)
     gust = s["maxGust"]; tmax = s["maxTemp"]; tmin = s["minTemp"]; wind = s["maxWind"]
-    focus = sum(d["precip"] for d in daily if d["precip"] >= 10)
+    focus = sum(d["rainfall"] for d in daily if d["rainfall"] >= 10)
     if pmax >= 80 or gust >= 20.8 or tmax >= 38 or focus >= 150: return 3
     if pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or focus >= 80: return 2
-    if pmax >= 12 or wind >= 10.8 or tmin <= 0 or focus >= 30: return 1
+    if pmax >= 12 or wind >= 10.8 or tmin <= -5 or focus >= 30: return 1
     return 0
 
-def sev_of_recent(hourly48):
-    """未来 48 小时风险等级：全部要素取自 hourly 前 48 个逐时的聚合。
-    ⚠️ 口径铁律（2026-10-09 用户定）：降水/降雪/阵风/风速/最高/最低气温**一律**用逐小时窗口，
-    不用 daily[:2] 的两个自然日——48h 窗口从当前整时起算横跨 3 个自然日
-    （如 10-09 13时~10-11 12时），daily[:2] 漏掉第 3 天上午那段，会低估累计降水
-    并漏掉第 3 天的阵风/高温。与 weather-engineering-index 的 sev_of_recent 完全同口径。
-    用户规则：中雨及以上（≥1.5mm/h）即至少定为「需关注」。"""
-    def _mx(k):
-        v = [x for x in (hourly48.get(k) or []) if isinstance(x, (int, float))]
-        return max(v) if v else None
-
-    def _mn(k):
-        v = [x for x in (hourly48.get(k) or []) if isinstance(x, (int, float))]
-        return min(v) if v else None
-
-    def _sm(k):
-        v = [x for x in (hourly48.get(k) or []) if isinstance(x, (int, float))]
-        return sum(v) if v else 0.0
-
-    ph   = _mx("precipitation") or 0.0
-    cum  = _sm("precipitation")
-    gust = _mx("wind_gusts_10m") or 0.0
-    wind = _mx("wind_speed_10m") or 0.0
-    tmax = _mx("temperature_2m")
-    tmin = _mn("temperature_2m")
-    if gust >= 20.8 or (tmax is not None and tmax >= 38) or cum >= 150: sev = 3
-    elif (ph >= 10 or gust >= 17.2 or (tmax is not None and tmax >= 35)
-          or (tmin is not None and tmin <= -5) or cum >= 80): sev = 2
-    elif ph >= 5 or wind >= 10.8 or gust >= 13.9 or (tmin is not None and tmin <= 0) or cum >= 20: sev = 1
+def sev_of_recent(daily2, ph=0.0, el48=None, snow_h=None):
+    """未来 48 小时风险等级：**全部要素**取 hourly 前 48 格窗口（el48，见 h48_elements），
+    仅日累计降水 pmax 仍取 daily 前 2 天（逐日峰值本身不会漏，且与用户习惯的「单日 XXmm」一致）。
+    降水同时看「日累计」与「小时级短时降水」——短时 >15mm/h 按大暴雨级给重点关注、
+    >6mm/h 按暴雨级给需关注、>3mm/h 按大雨级给需关注，与物探看板 _sev_of 一致。
+    **新增要素（均风 / 体感温度 UTCI / 能见度 / 降雪）统一经 jozzonwx.el_levels 计级并入**，
+    与 weather-engineering-index / 物探看板共用同一套分级，杜绝两边口径漂移。"""
+    pmax = max((d["rainfall"] for d in daily2), default=0)
+    cum = sum(d["rainfall"] for d in daily2)
+    if el48:
+        gust = el48.get("maxGust") or 0.0
+        wind = el48.get("maxWind") or 0.0
+        tmax = el48.get("tmax") if el48.get("tmax") is not None else 99
+        tmin = el48.get("tmin") if el48.get("tmin") is not None else 99
+        appMax = el48.get("appMax")
+        appMin = el48.get("appMin")
+        visMin = el48.get("visMin")
+    else:
+        gust = max((d["gustMax"] for d in daily2), default=0)
+        wind = max((d["windMax"] for d in daily2), default=0)
+        tmax = max((d["tempMax"] for d in daily2), default=99)
+        tmin = min((d["tempMin"] for d in daily2), default=99)
+        appMax = appMin = None
+        visMin = None
+    if appMax is None:
+        appMax = max((d.get("apparentMax", -99) for d in daily2), default=-99)
+        appMin = min((d.get("apparentMin", 99) for d in daily2), default=99)
+    if visMin is None:
+        vp = [d.get("visMin") for d in daily2 if d.get("visMin")]
+        visMin = min(vp) if vp else None
+    appMax = appMax if (appMax is not None and appMax > -99) else None
+    appMin = appMin if (appMin is not None and appMin < 99) else None
+    # ph = 48h 内最大小时降水（mm/h）：短时强降水须计入，否则日累计小的井位会被低估
+    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: sev = 3
+    elif ph >= RAIN_H["torrent"] or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: sev = 2
+    elif ph >= RAIN_H["storm"] or ph >= RAIN_H["heavy"] or pmax >= 12 or wind >= 10.8 or tmin <= -5 or cum >= 20: sev = 1
     else: sev = 0
+    #用户规则（2026-10-09）：有明显降雨（中雨及以上，即 >=1.5mm/h）即至少定为「需关注」；
+    # 降雪、阵风、高/低温仍按各自等级判定，不因这条降雨规则被额外抬级。
     if ph >= 1.5:
         sev = max(sev, 1)
+    # 新增要素（均风/UTCI/能见度/降雪）48h 等级并入综合风险；
+    # 同时充当一致性兜底：任一要素达 3 级及以上时，综合等级至少「需关注」。
+    peaks = {"rain": ph, "snow": snow_h or 0.0, "wind": wind or 0.0, "gust": gust or 0.0,
+             "appMax": appMax, "appMin": appMin, "visMin": visMin}
+    sev = max(sev, JW.sev_from_levels(JW.el_levels(peaks)))
     return sev
+
+
+def snow_hour_max_48(hourly48):
+    """未来 48 小时窗口的最大小时降雪量（mm/h），与 index 的
+    peaks_48h()["snowHourMax"]、雪卡判据同源同值，供一致性兜底判暴雪等级。
+
+    ⚠️ 2026-10-16 修：jozzon-mcp 返回的 `hourly.snowfall` **已是 mm/h**，
+    这里**不再做 ×10（cm→mm）换算**——旧 Open-Meteo 时代降雪是 cm，
+    遗留的 ×10 会把 0.2mm/h 的雪放大成 2.0 → grade_snow 判成 4 级「极强降雪」，
+    凭空冒出高度警惕。物探 build_dashboard 的 snowHourMax 同样无 ×10。"""
+    sf = (hourly48 or {}).get("snowfall") or []
+    if not sf:
+        return None
+    return round(max(sf[:48]), 2)
+
+
+def _alert_lv_48(daily2, ph, el48, gust, tmax, tmin, snow_h=None):
+    """未来 48 小时各要素预警等级（沿用用户 2026-10-09 阈值），供一致性兜底判定。
+    与 index 的 rain_alert/gust_alert/snow_alert/thigh_alert/tlow_alert 同一套阈值。
+    snow_h：hourly 前 48 格的降雪峰值（**mm/h，无 ×10**，与 index 的 peaks_48h.snowHourMax 同源）；
+    传None 时退回 daily 日均降雪（仅无 hourly 的旧数据）。"""
+    def _rain(mmh):
+        if mmh is None: return 0
+        if mmh >= 15: return 5
+        if mmh >= 6:  return 4
+        if mmh >= 3:  return 3
+        if mmh >= 1.5: return 2
+        if mmh >= 0.2: return 1
+        return 0
+    def _snow(mmh):
+        if mmh is None: return 0
+        if mmh >= 2:return 4
+        if mmh >= 1:   return 3
+        if mmh >= 0.5: return 2
+        if mmh >= 0.1: return 1
+        return 0
+    def _gust(v):
+        if v is None: return 0
+        if v >= 17.2: return 4
+        if v >= 13.9: return 3
+        if v >= 10.8: return 2
+        if v >= 8.0:  return 1
+        return 0
+    def _hi(v):
+        if v is None: return 0
+        if v >= 40: return 3
+        if v >= 37: return 2
+        if v >= 35: return 1
+        return 0
+    def _lo(v):
+        if v is None: return 0
+        if v <= -25: return 3
+        if v <= -15: return 2
+        if v <= -5:  return 1
+        return 0
+    if snow_h is None:
+        snow_h = max(((d.get("snowfall") or 0) for d in (daily2 or [])), default=0) or None
+    return (_rain(ph), _snow(snow_h), _gust(gust), _hi(tmax), _lo(tmin))
 
 def h48_precip(hourly48):
     """未来 48 小时（起始小时起连续 48 个逐小时）累计降水 mm。
     不用「两个自然日之和」——当日已过去大半，两日累计会明显偏大。"""
-    pr = (hourly48.get("precipitation") or [])[:48]
+    pr = (hourly48.get("rainfall") or [])[:48]
     return round(sum(pr), 1)
+
+def h48_elements(hourly48):
+    """未来 48 小时窗口的阵风/持续风/最高温/最低温/体感温度/能见度极值（与 h48_precip 同一时间窗）。
+
+    **一律用 hourly 逐小时窗口，不用 daily[:2]，也不用 summary 全窗值**：
+    ① hourly 起点是当日整点，48h 窗口横跨 3 个自然日，daily[:2] 会整段漏掉第 3 天；
+    ② summary.maxGust/maxTemp/minTemp 是 14 天全窗极值，会把第 3~14 天的远端
+       大风/高温/寒潮当成「未来两天」的风险（实测贵阳东支线阵风 16.3 vs 48h 内 8.8、
+       红页7-5HF 最低温全窗 6.7℃ vs 48h 内 15.1℃ → 会误报寒冷/大风预警）。
+    hourly 缺失时才退回 daily[:2]。"""
+    h = hourly48 or {}
+    g48 = h.get("wind_gusts_10m") or []
+    w48 = h.get("wind_speed_10m") or []
+    t48 = h.get("temperature_2m") or []
+    a48 = h.get("apparent_temperature") or []
+    v48 = h.get("visibility") or []
+    if not (g48 or w48 or t48 or a48 or v48):
+        d2 = (h.get("_daily2") or [])
+        if not d2:
+            return {"maxGust": None, "maxWind": None, "tmax": None, "tmin": None,
+                    "appMax": None, "appMin": None, "visMin": None}
+        _am48 = [x.get("apparentMax") for x in d2 if x.get("apparentMax") is not None]
+        _an48 = [x.get("apparentMin") for x in d2 if x.get("apparentMin") is not None]
+        return {"maxGust": round(max((x.get("gustMax", 0) for x in d2), default=0), 1),
+                "maxWind": round(max((x.get("windMax", 0) for x in d2), default=0), 1),
+                "tmax": round(max((x.get("tempMax", -99) for x in d2), default=-99), 1),
+                "tmin": round(min((x.get("tempMin", 99) for x in d2), default=99), 1),
+                # ⚠️ 体感缺省必须给 None，不能给 -99/99 哨兵值：旧数据没有
+                # apparentMax/apparentMin 时，哨兵值会被 grade_utci 判成
+                # 「极寒(-99) / 极热(99)」4 级，凭空冒出「极热预警」。
+                "appMax": round(max(_am48), 1) if _am48 else None,
+                "appMin": round(min(_an48), 1) if _an48 else None,
+                "visMin": round(min((x.get("visMin", 1e9) for x in d2 if x), default=1e9))
+                          if any(x and x > 0 for x in (x.get("visMin") for x in d2)) else None}
+    def _mx(s): return round(max(s[:48]), 1) if s else None
+    def _mn(s): return round(min(s[:48]), 1) if s else None
+    vp = [x for x in v48[:48] if x and x > 0]
+    return {
+        "maxGust": _mx(g48), "maxWind": _mx(w48),
+        "tmax": _mx(t48), "tmin": _mn(t48),
+        "appMax": _mx(a48), "appMin": _mn(a48),
+        "visMin": round(min(vp), 0) if vp else None,
+    }
 
 def h48_span(hourly48):
     """未来 48 小时窗口的起止时刻文案（如 `10-09 12 时~10-11 11 时`）。"""
@@ -194,33 +349,42 @@ def h48_span(hourly48):
     return f"未来 48 小时（{lab(ts[0])}~{lab(ts[-1])}）"
 
 def alert_desc(daily, s, ph=0.0, hourly48=None):
-    """「主要关注」卡片：降水量采用未来 48 小时窗口口径。"""
+    """「主要关注」卡片：**全部要素**统一用未来 48 小时逐小时窗口口径
+    （风/温不再取 summary 全窗 14 天极值，也不取 daily[:2]）。"""
     parts = []
     cum = h48_precip(hourly48 or {})
     if cum >= 0.5:
         parts.append(f"{h48_span(hourly48 or {})}累计降水 {cum}mm")
     if ph >= RAIN_H["heavy"]:
         parts.append(f"{rain_hour_label(ph)}最大小时降水 {ph}mm/h")
-    if s["maxGust"] >= 10.8:
-        parts.append(f"阵风最大 {s['maxGust']}m/s")
-    if s["maxTemp"] >= 32:
-        parts.append(f"最高温 {s['maxTemp']}°C")
-    if s["minTemp"] <= 0:
-        parts.append(f"最低温 {s['minTemp']}°C（结冰风险）")
+    e = h48_elements(hourly48 or {})
+    g, w, tm, tn = e["maxGust"], e["maxWind"], e["tmax"], e["tmin"]
+    if g is not None and g >= 8.0:
+        parts.append(f"阵风最大 {g}m/s（{gust_lbl(g)}）")
+    if tm is not None and tm >= 35:
+        parts.append(f"最高温 {tm}°C（{htemp_lbl(tm)}）")
+    if tn is not None and tn <= -5:
+        parts.append(f"最低温 {tn}°C（{ltemp_lbl(tn)}）")
     if not parts:
         parts.append("未来 48 小时天气整体平稳，无明显极端天气")
     return "主要关注：" + "；".join(parts) + "。建议据此调整作业安排。"
 
 def _near_summary(daily2, ph=0.0, hourly48=None):
-    """「重点提示」Tab 的 48h 口径聚合。totalPrecip 用未来 48 小时逐小时累计
-    （不是两个自然日之和），风/温仍取 daily 前 2 天极值。"""
+    """「重点提示」Tab 的 48h 口径聚合。累计降水与风/温/体感/能见度**全部**取 hourly 前 48 格
+    （同h48_precip / h48_elements 口径），不用 daily[:2]、也不用 summary 全窗值。"""
+    h = dict(hourly48 or {})
+    h["_daily2"] = list(daily2 or [])
+    e = h48_elements(h)
     return {
         "totalPrecip": h48_precip(hourly48 or {}),
         "pHourMax": ph,                 # 48h 内最大小时降水（mm/h），与 totalPrecip 并列展示
-        "maxGust": round(max(d["gustMax"] for d in daily2), 1),
-        "maxTemp": round(max(d["tempMax"] for d in daily2), 1),
-        "minTemp": round(min(d["tempMin"] for d in daily2), 1),
-        "maxWind": round(max(d["windMax"] for d in daily2), 1),
+        "maxGust": e["maxGust"],
+        "maxWind": e["maxWind"],
+        "maxTemp": e["tmax"],
+        "minTemp": e["tmin"],
+        "maxApparent": e["appMax"],
+        "minApparent": e["appMin"],
+        "minVis": e["visMin"],
     }
 
 def far_alert(daily):
@@ -230,24 +394,24 @@ def far_alert(daily):
     if not far:
         return None
     items = []
-    big_rain = [d for d in far if d["precip"] >= 50]
+    big_rain = [d for d in far if d["rainfall"] >= 50]
     if big_rain:
         f0, f1 = big_rain[0]["date"][5:], big_rain[-1]["date"][5:]
         span = f"{f0}~{f1}" if f0 != f1 else f0
-        items.append(f"{span} 暴雨（单日最大 {max(d['precip'] for d in big_rain)}mm）")
+        items.append(f"{span} 暴雨（单日最大 {max(d['rainfall'] for d in big_rain)}mm）")
     g = [d for d in far if d["gustMax"] >= 17.2]
     if g:
-        items.append(f"阵风最大 {max(d['gustMax'] for d in g)}m/s（≥8 级）")
+        items.append(f"阵风最大 {max(d['gustMax'] for d in g)}m/s（{gust_lbl(max(d['gustMax'] for d in g))}）")
     t = [d for d in far if d["tempMax"] >= 35]
     if t:
-        items.append(f"高温 {max(d['tempMax'] for d in t)}°C")
+        items.append(f"高温 {max(d['tempMax'] for d in t)}°C（{htemp_lbl(max(d['tempMax'] for d in t))}）")
     c = [d for d in far if d["tempMin"] <= -5]
     if c:
-        items.append(f"严寒 {min(d['tempMin'] for d in c)}°C")
+        items.append(f"低温 {min(d['tempMin'] for d in c)}°C（{ltemp_lbl(min(d['tempMin'] for d in c))}）")
     return "；".join(items) if items else None
 
 def risk_of(daily, s):
-    pmax = max((d["precip"] for d in daily), default=0)
+    pmax = max((d["rainfall"] for d in daily), default=0)
     if s["maxGust"] >= 17.2 or s["maxTemp"] >= 35 or pmax >= 50: return "danger"
     if pmax >= 25 or s["maxWind"] >= 10.8 or s["minTemp"] <= 0: return "warn"
     return "ok"
@@ -328,18 +492,27 @@ def ptype_legend_html():
                        f'<i style="width:12px;height:12px;border-radius:3px;background:{c};display:inline-block"></i>{t}</span>')
     return (eic("rain") + sw(PT_FILL[1], "降雨") + sw(PT_FILL[2], "降雪") + sw(PT_FILL[3], "雨夹雪"))
 
-def svg_bars(dates, values, color, h=160, w=680, sid="", days=None, unit="mm", label="降水", ptypes=None):
+def svg_bars(dates, values, color, h=160, w=680, sid="", days=None, unit="mm", label="降水",
+             ptypes=None, extra=None):
+    """服务端预渲染柱状图。extra 为可选的附加柱系列 [(名称, 数值数组, 颜色), ...]，
+    与主系列在「同一天内」并排分组绘制——用于把降雪并入降水图（降雨蓝 + 降雪青）。
+    extra 为空时行为与旧版完全一致（单系列、按 ptypes 着色）。"""
     left, right, top, bot = 42, 12, 14, 30
     x0, x1, y0, y1 = left, w - right, top, h - bot
+    extras = [(nm, list(vs), cl) for nm, vs, cl in (extra or [])]
+    series_all = [(label, list(values), color)] + extras
     vmin = 0.0                                     # 基线恒为 0：不再向下 pad 出负值（否则 0mm 也会被画成约 13px 的柱子）
-    vmax = max(values + [1]) * 1.15                # 顶部留 15% 余量，便于柱顶数值标注
+    vmax = max([v for _, vs, _ in series_all for v in vs] + [1]) * 1.15   # 顶部留 15% 余量
     def X(i): return x0 + (x1 - x0) * (i + 0.5) / len(dates)
     def Y(v): return y1 - (v - vmin) / (vmax - vmin) * (y1 - y0)
-    bw = (x1 - x0) / len(dates) * 0.55
+    groups = len(series_all)
+    slot = (x1 - x0) / len(dates)
+    bw = slot * (0.55 if groups == 1 else 0.30)
+    gap = 0.0 if groups == 1 else slot * 0.05
     payload = {"kind": "bar", "n": len(dates), "x0": x0, "x1": x1, "top": y0, "bot": y1,
                "w": w, "h": h, "unit": unit, "days": days or dates,
                "ptypes": list(ptypes or []),
-               "series": [{"name": label, "color": color, "vals": values}]}
+               "series": [{"name": nm, "color": cl, "vals": vs} for nm, vs, cl in series_all]}
     dp = _html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
     attrs = f'id="{sid}" class="dchart"' if sid else ""
     p = [f'<svg {attrs} data-payload="{dp}" viewBox="0 0 {w} {h}" width="100%" preserveAspectRatio="xMinYMin meet" style="display:block">']
@@ -348,31 +521,48 @@ def svg_bars(dates, values, color, h=160, w=680, sid="", days=None, unit="mm", l
         p.append(f'<line x1="{x0}" y1="{gy:.1f}" x2="{x1}" y2="{gy:.1f}" stroke="#ececec"/>')
         glab = f"{gv:.0f}" if vmax >= 10 else f"{gv:.1f}"
         p.append(f'<text x="{x0-5}" y="{gy+3:.1f}" text-anchor="end" font-size="12" fill="#999">{glab}</text>')
-    for i, (d, v) in enumerate(zip(dates, values)):
-        bx = X(i) - bw / 2
+    for i, d in enumerate(dates):
+        cx = X(i)
         pt = ptypes[i] if (ptypes and i < len(ptypes)) else 0
-        if v > 0 or pt:                                 # 无降水不画柱；降雪水当量不足 0.1mm 时保留最小柱以承载类型图标
-            bh = max(y1 - Y(v), 3.0)                     # 小值也保证 3px 可见高度
-            bcolor = PT_FILL.get(pt, PT_FILL_FB)         # 按降水类型着色：降雨蓝 / 降雪青 / 雨夹雪紫
+        group_w = bw * groups + gap * (groups - 1)
+        gx = cx - group_w / 2
+        for gi, (nm, vs, cl) in enumerate(series_all):
+            v = vs[i] if i < len(vs) else 0.0
+            bx = gx + gi * (bw + gap)
+            # 无降水不画柱；单系列时降雪水当量不足 0.1mm 仍保留最小柱以承载类型着色
+            if not (v > 0 or (groups == 1 and pt)):
+                continue
+            bh = max(y1 - Y(v), 3.0)                 # 小值也保证 3px 可见高度
+            bcolor = (PT_FILL.get(pt, PT_FILL_FB) if groups == 1 else cl)
             p.append(f'<rect x="{bx:.1f}" y="{y1-bh:.1f}" width="{bw:.1f}" height="{bh:.1f}" fill="{bcolor}" rx="2"/>')
             # 小值保留一位小数（避免 0.3mm 被标成「0」）；微量降雪折合不足 0.1mm 时标「<0.1」
             lab = (f"{v:.0f}" if v >= 10 else f"{v:.1f}") if v > 0 else "<0.1"
             lab_y = y1 - bh - 4
-            p.append(f'<text x="{X(i):.1f}" y="{lab_y:.1f}" text-anchor="middle" font-size="11" fill="#444">{lab}</text>')
-        p.append(f'<text x="{X(i):.1f}" y="{h-9}" text-anchor="middle" font-size="11" fill="#888">{d[5:]}</text>')
+            p.append(f'<text x="{bx+bw/2:.1f}" y="{lab_y:.1f}" text-anchor="middle" font-size="11" fill="#444">{lab}</text>')
+        p.append(f'<text x="{cx:.1f}" y="{h-9}" text-anchor="middle" font-size="11" fill="#888">{d[5:]}</text>')
     p.append('</svg>')
     return "".join(p)
 
 def svg_lines(dates, series, h=160, w=680, sid="", days=None, unit=""):
+    """服务端预渲染折线图。series 每项为 (名称, 数值数组, 颜色)，或
+    (名称, 数值数组, 颜色, 选项字典)，选项支持：
+      labels=False —— 关闭该折线的逐点数值标注（把体感并入气温图时，4 条线逐点标值会互相遮挡，
+                      故体感只画虚线不标值；点选日期时数值框仍会给出全部系列的值）
+      dash="6 4"   —— 该折线画成虚线
+    """
     left, right, top, bot = 42, 12, 14, 30
     x0, x1, y0, y1 = left, w - right, top, h - bot
-    allv = [v for _, vals, _ in series for v in vals]
+    norm = []
+    for s in series:
+        op = s[3] if (len(s) > 3 and isinstance(s[3], dict)) else {}
+        norm.append((s[0], list(s[1]), s[2], op))
+    allv = [v for _, vals, _, _ in norm for v in vals] or [0.0]
     vmin, vmax = _scale(min(allv), max(allv))
     def X(i): return x0 + (x1 - x0) * i / max(len(dates) - 1, 1)
     def Y(v): return y1 - (v - vmin) / (vmax - vmin) * (y1 - y0)
     payload = {"kind": "line", "n": len(dates), "x0": x0, "x1": x1, "top": y0, "bot": y1,
                "w": w, "h": h, "unit": unit, "days": days or dates,
-               "series": [{"name": nm, "color": cl, "vals": vs} for nm, vs, cl in series]}
+               "series": [{"name": nm, "color": cl, "vals": vs} for nm, vs, cl, _ in norm]}
     dp = _html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
     attrs = f'id="{sid}" class="dchart"' if sid else ""
     p = [f'<svg {attrs} data-payload="{dp}" viewBox="0 0 {w} {h}" width="100%" preserveAspectRatio="xMinYMin meet" style="display:block">']
@@ -380,41 +570,59 @@ def svg_lines(dates, series, h=160, w=680, sid="", days=None, unit=""):
         gv = vmin + (vmax - vmin) * g / 3; gy = Y(gv)
         p.append(f'<line x1="{x0}" y1="{gy:.1f}" x2="{x1}" y2="{gy:.1f}" stroke="#ececec"/>')
         p.append(f'<text x="{x0-5}" y="{gy+3:.1f}" text-anchor="end" font-size="12" fill="#999">{gv:.0f}</text>')
-    for name, vals, color in series:
+    for name, vals, color, op in norm:
+        dash = f''' stroke-dasharray="{op['dash']}"''' if op.get("dash") else ""
         pts = " ".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in enumerate(vals))
-        p.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2"/>')
+        p.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2"{dash}/>')
         for i, v in enumerate(vals):
             p.append(f'<circle cx="{X(i):.1f}" cy="{Y(v):.1f}" r="2.6" fill="{color}"/>')
-            offset_y = -7 if Y(v) < (y0+y1)/2 else 12
-            p.append(f'<text x="{X(i):.1f}" y="{Y(v)+offset_y:.1f}" text-anchor="middle" font-size="10" fill="{color}" font-weight="700">{v:.1f}</text>')
+            if op.get("labels", True):
+                offset_y = -7 if Y(v) < (y0+y1)/2 else 12
+                p.append(f'<text x="{X(i):.1f}" y="{Y(v)+offset_y:.1f}" text-anchor="middle" font-size="10" fill="{color}" font-weight="700">{v:.1f}</text>')
     for i, d in enumerate(dates):
         p.append(f'<text x="{X(i):.1f}" y="{h-9}" text-anchor="middle" font-size="11" fill="#888">{d[5:]}</text>')
     return "".join(p)
 
 # ---------- 文案生成 ----------
-def impact_bullets(daily, s, ph=0.0):
+def impact_bullets(daily, s, ph=0.0, hourly48=None):
     """作业影响与建议。每条前缀「要素小图标（色块＝该条自身的风险等级）＋加粗要素名」，
-    图标等级按本条判据独立计算，不受风险卡口径牵连。"""
+    图标等级按本条判据独立计算，不受风险卡口径牵连。
+    阵风/温度用未来 48 小时窗口口径（同 h48_elements），不用 summary 全窗 14 天极值。"""
     out = []
-    focus = [d for d in daily if d["precip"] >= 10]
-    pmax = max((d["precip"] for d in daily), default=0)
+    focus = [d for d in daily if d["rainfall"] >= 10]
+    pmax = max((d["rainfall"] for d in daily), default=0)
+    e = h48_elements(hourly48 or {})
+    g48 = e["maxGust"] if e["maxGust"] is not None else s["maxGust"]
+    t48 = e["tmax"] if e["tmax"] is not None else s["maxTemp"]
+    n48 = e["tmin"] if e["tmin"] is not None else s["minTemp"]
+    aMax = e["appMax"] if e.get("appMax") is not None else s.get("maxApparent")
+    aMin = e["appMin"] if e.get("appMin") is not None else s.get("minApparent")
+    visMin = e.get("visMin")
+    sf = (hourly48 or {}).get("snowfall") or []
+    snow_pk = max(sf[:48]) if sf else 0.0
     if focus:
-        tot = round(sum(d["precip"] for d in focus), 1)
+        tot = round(sum(d["rainfall"] for d in focus), 1)
         out.append(f"{eic('rain', lv_rain(ph), size='xs')}<b>降水泥泞</b>：连续降雨累计 {tot}mm，井场 / 管沟道路泥泞、设备基础易沉降，加强排水与铺垫，重型车辆限行。")
     if ph >= RAIN_H["torrent"]:
-        out.append(f"{eic('rain','danger', size='xs')}<b>短时大暴雨</b>：最大小时降水 {ph}mm/h（>10mm/h），地面积水快速上涨、管沟与井场排水瞬时超负荷，低洼段设备应提前撤离或垫高，暂停涉水作业。")
+        out.append(f"{eic('rain','danger', size='xs')}<b>短时大暴雨</b>：最大小时降水 {ph}mm/h（>15mm/h），地面积水快速上涨、管沟与井场排水瞬时超负荷，低洼段设备应提前撤离或垫高，暂停涉水作业。")
     elif ph >= RAIN_H["storm"]:
-        out.append(f"{eic('rain','danger', size='xs')}<b>短时暴雨</b>：最大小时降水 {ph}mm/h（>5mm/h），井场局部积水、设备基础可能被冲刷，加强排水、电缆接头包覆防水，重型车辆避开低洼路段。")
+        out.append(f"{eic('rain','danger', size='xs')}<b>短时暴雨</b>：最大小时降水 {ph}mm/h（>6mm/h），井场局部积水、设备基础可能被冲刷，加强排水、电缆接头包覆防水，重型车辆避开低洼路段。")
     elif ph >= RAIN_H["heavy"]:
-        out.append(f"{eic('rain','warn', size='xs')}<b>短时大雨</b>：最大小时降水 {ph}mm/h（>2mm/h），降水强度明显、道路湿滑泥泞，作业面注意防滑防淹，排水沟提前疏通。")
-    if s["maxGust"] >= 17.2:
-        out.append(f"{eic('wind','danger', size='xs')}<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s（≥8 级），吊装与高处作业需停工避风，加固井架、棚架与临时设施。")
-    elif s["maxGust"] >= 10.8 or s["maxWind"] >= 10.8:
-        out.append(f"{eic('wind','warn', size='xs')}<b>大风 / 阵风</b>：阵风最大 {s['maxGust']}m/s，高处作业注意系挂，零星吊装避开阵风时段。")
-    if s["maxTemp"] >= 35:
-        out.append(f"{eic('heat','danger', size='xs')}<b>高温</b>：最高温 {s['maxTemp']}°C，防暑降温、避开正午露天作业、设备过热防护与电池管理。")
-    elif s["minTemp"] <= 0:
-        out.append(f"{eic('snow','warn', size='xs')}<b>低温 / 结冰</b>：最低温 {s['minTemp']}°C，人员保暖、道路与设备防滑、备用电源。")
+        out.append(f"{eic('rain','warn', size='xs')}<b>短时大雨</b>：最大小时降水 {ph}mm/h（>3mm/h），降水强度明显、道路湿滑泥泞，作业面注意防滑防淹，排水沟提前疏通。")
+    if g48 >= 8.0:
+        out.append(f"{eic('wind', lv_gust(g48), size='xs')}<b>大风 / 阵风</b>：阵风最大 {g48}m/s（{gust_lbl(g48)}），"
+                   f"{'吊装与高处作业需停工避风，加固井架、棚架与临时设施。' if g48>=17.2 else '高处作业注意系挂，零星吊装避开阵风时段。'}")
+    # 舒适度由体感温度 UTCI 承担（plain 温度只展示）；冷/热双向
+    if aMax is not None and JW.grade_utci(aMax)[0] >= 3:
+        out.append(f"{eic('heat','danger', size='xs')}<b>高温 / 体感酷热</b>：体感最高温 {aMax}°C（{JW.UTCI_HOT[JW.grade_utci(aMax)[0]]}），防暑降温、避开正午露天作业、设备过热防护与电池管理。")
+    elif aMin is not None and JW.grade_utci(aMin)[0] >= 2:
+        out.append(f"{eic('snow','warn', size='xs')}<b>低温 / 体感严寒</b>：体感最低温 {aMin}°C（{JW.UTCI_COLD[JW.grade_utci(aMin)[0]]}），人员保暖、道路与设备防滑、备用电源。")
+    if snow_pk >= 0.1:
+        slv = JW.grade_snow(snow_pk)
+        out.append(f"{eic('snow', 'danger' if slv >= 3 else 'warn', size='xs')}<b>降雪 / 积雪</b>：最大小时降雪 {snow_pk}mm/h（{JW.SNOW_ALERT[slv]}），积雪与道路结冰风险，加强除雪防滑、设备覆雪防护。")
+    if visMin is not None and visMin < 1000:
+        vl = JW.grade_vis(visMin)
+        out.append(f"{eic('fog', 'danger' if vl >= 3 else 'warn', size='xs')}<b>能见度</b>：最低能见度 {int(visMin)}m（{JW.VIS_ALERT[vl]}），谨慎行车、必要时封路、夜间作业加强照明。")
     if pmax >= 25:
         out.append(f"{eic('fog','warn', size='xs')}<b>行车</b>：降雨集中（单日最大 {pmax}mm），山区道路湿滑、能见度下降，谨慎行车、必要时封路。")
     if not out:
@@ -430,42 +638,78 @@ def card_icon(title):
     if "气温" in title:                      return "temp"
     return "fog"                             # 行车 / 能见度
 
-def risk_cards(daily, s, ph=0.0):
-    pmax = max((d["precip"] for d in daily), default=0)
+def risk_cards(daily, s, ph=0.0, hourly48=None):
+    """风险卡：风/温用未来 48 小时窗口口径（同 h48_elements），不用全窗 14 天极值。"""
+    pmax = max((d["rainfall"] for d in daily), default=0)
+    e = h48_elements(hourly48 or {})
+    g48 = e["maxGust"] if e["maxGust"] is not None else s["maxGust"]
+    w48 = e["maxWind"] if e["maxWind"] is not None else s["maxWind"]
+    t48 = e["tmax"] if e["tmax"] is not None else s["maxTemp"]
+    n48 = e["tmin"] if e["tmin"] is not None else s["minTemp"]
     cards = []
-    if s["maxGust"] >= 17.2:
-        cards.append(("danger", "大风 / 阵风", "预警", f"阵风最大 {s['maxGust']}m/s（≥8 级），吊装 / 高处作业停工避风。"))
-    elif s["maxGust"] >= 10.8 or s["maxWind"] >= 10.8:
-        cards.append(("warn", "大风 / 阵风", "注意", f"阵风最大 {s['maxGust']}m/s，高处作业系挂、避开阵风时段。"))
+    if g48 >= 17.2:
+        cards.append(("danger", "大风 / 阵风", "预警", f"阵风最大 {g48}m/s（{gust_lbl(g48)}），吊装 / 高处作业停工避风。"))
+    elif g48 >= 8.0 or w48 >= 8.0:
+        cards.append(("warn", "大风 / 阵风", "注意", f"阵风最大 {g48}m/s（{gust_lbl(g48)}），高处作业系挂、避开阵风时段。"))
     else:
-        cards.append(("ok", "大风 / 阵风", "安全", f"阵风最大 {s['maxGust']}m/s，无大风风险。"))
-    # 降水卡：日累计与小时级短时降水双判据（>2 大雨 / >5 暴雨 / >10 大暴雨，仅 48h 口径），
+        cards.append(("ok", "大风 / 阵风", "安全", f"阵风最大 {g48}m/s，无大风风险。"))
+    # 降水卡：日累计与小时级短时降水双判据（>3 大雨 / >6 暴雨 / >15 大暴雨，仅 48h 口径），
     # 分级与物探看板 build_dashboard.py 的降水卡片保持完全一致。
     if ph >= RAIN_H["torrent"] or pmax >= 50:
         cards.append(("danger", "降水 / 泥泞", "预警",
             f"单日最大降水 {pmax}mm" + (f"、最大小时降水 {ph}mm/h（{rain_hour_label(ph)}）" if ph >= RAIN_H["heavy"] else "")
             + "，井场泥泞、积水风险高。"))
     elif ph >= RAIN_H["storm"] or pmax >= 25:
-        what = (f"最大小时降水 {ph}mm/h（短时暴雨，>5mm/h）" if ph >= RAIN_H["storm"]
+        what = (f"最大小时降水 {ph}mm/h（短时暴雨，>6mm/h）" if ph >= RAIN_H["storm"]
                 else f"单日最大降水 {pmax}mm（大雨）")
         cards.append(("warn", "降水 / 泥泞", "注意",
             what + "，井场局部积水、排水压力骤增，设备防雨防潮、道路湿滑降速。"))
     elif ph >= RAIN_H["heavy"]:
         cards.append(("warn", "短时大雨 / 泥泞", "注意",
-            f"48 小时日累计降雨不大，但出现 {ph}mm/h 的短时大雨（>2mm/h），短时积水与便道湿滑明显。低洼与管沟段注意排水、车辆降速，设备防雨防潮。"))
+            f"48 小时日累计降雨不大，但出现 {ph}mm/h 的短时大雨（>3mm/h），短时积水与便道湿滑明显。低洼与管沟段注意排水、车辆降速，设备防雨防潮。"))
     else:
         cards.append(("ok", "降水 / 泥泞", "安全",
             f"48 小时无明显短时强降水，最大小时降水 {ph}mm/h，单日最大 {pmax}mm，无明显泥泞风险。"))
-    if s["maxTemp"] >= 35:
-        cards.append(("danger", "高温", "预警", f"最高温 {s['maxTemp']}°C，防暑降温。"))
-    elif s["minTemp"] <= 0:
-        cards.append(("warn", "低温 / 结冰", "注意", f"最低温 {s['minTemp']}°C，结冰 / 霜冻风险。"))
+    # 降雪卡（48h 最大小时降雪，mm/h）：与物探看板降雪分级一致
+    sf = (hourly48 or {}).get("snowfall") or []
+    snow_pk = max(sf[:48]) if sf else 0.0
+    slv = JW.grade_snow(snow_pk)
+    if slv >= 3:
+        cards.append(("danger", "降雪 / 积雪", "预警", f"最大小时降雪 {snow_pk}mm/h（{JW.SNOW_ALERT[slv]}），积雪 / 道路结冰、设备覆雪，加强除雪与防滑。"))
+    elif slv >= 1:
+        cards.append(("warn", "降雪 / 积雪", "注意", f"最大小时降雪 {snow_pk}mm/h（{JW.SNOW_ALERT[slv]}），注意积雪与道路防滑。"))
+    # 舒适度卡：plain 温度只展示，舒适度由体感温度 UTCI 判定（冷/热双向）
+    aMax = e["appMax"] if e.get("appMax") is not None else s.get("maxApparent")
+    aMin = e["appMin"] if e.get("appMin") is not None else s.get("minApparent")
+    ulv = 0
+    if aMax is not None: ulv = max(ulv, JW.grade_utci(aMax)[0])
+    if aMin is not None: ulv = max(ulv, JW.grade_utci(aMin)[0])
+    if ulv >= 3:
+        if aMax is not None and JW.grade_utci(aMax)[0] >= 3:
+            cards.append(("danger", "高温 / 体感酷热", "预警", f"体感最高温 {aMax}°C（{JW.UTCI_HOT[JW.grade_utci(aMax)[0]]}），防暑降温、避开正午露天作业、设备过热防护。"))
+        else:
+            cards.append(("danger", "低温 / 体感酷寒", "预警", f"体感最低温 {aMin}°C（{JW.UTCI_COLD[JW.grade_utci(aMin)[0]]}），人员保暖、设备与道路防滑防冻、备用电源。"))
+    elif ulv >= 2:
+        if aMax is not None and JW.grade_utci(aMax)[0] >= 2:
+            cards.append(("warn", "体感偏热", "注意", f"体感最高温 {aMax}°C，体感偏热，注意防暑与通风。"))
+        else:
+            cards.append(("warn", "低温 / 体感严寒", "注意", f"体感最低温 {aMin}°C，体感严寒，人员保暖、设备防冻。"))
     else:
-        cards.append(("ok", "气温", "适宜", f"气温区间 {s['minTemp']}~{s['maxTemp']}°C，体感适宜。"))
+        rng = f"体感 {aMin}~{aMax}°C，" if (aMin is not None and aMax is not None) else ""
+        cards.append(("ok", "气温 / 体感", "适宜", f"气温 {n48}~{t48}°C，{rng}体感适宜。"))
+    # 能见度卡（48h 最低能见度，m）
+    visMin = e.get("visMin")
+    if visMin is not None and visMin < 1000:
+        vl = JW.grade_vis(visMin)
+        cards.append(("danger" if vl >= 3 else "warn", "能见度", "注意",
+            f"最低能见度 {int(visMin)}m（{JW.VIS_ALERT[vl]}），谨慎行车、必要时封路、夜间作业加强照明与警示。"))
+    else:
+        cards.append(("ok", "能见度", "提示", "能见度良好，常规行车注意。"))
+    # 行车 / 道路卡（降雨集中导致道路湿滑）
     if pmax >= 25:
-        cards.append(("warn", "行车 / 能见度", "注意", "降雨集中，山区道路湿滑、能见度下降。"))
+        cards.append(("warn", "行车 / 道路", "注意", "降雨集中，山区道路湿滑、便道泥泞，谨慎行车、必要时封路。"))
     else:
-        cards.append(("ok", "行车 / 能见度", "提示", "道路条件良好，常规行车注意。"))
+        cards.append(("ok", "行车 / 道路", "提示", "道路条件良好，常规行车注意。"))
     return cards
 
 # ---------- 单点 HTML ----------
@@ -492,7 +736,7 @@ h1 {font-size:19px; margin:2px 0 2px;}
 .alert .t {font-size:16px; font-weight:800; display:flex; align-items:center; gap:8px;}
 .alert .d {font-size:13px; margin-top:6px; opacity:.97; line-height:1.55;}
 .dot {width:11px; height:11px; border-radius:50%; background:#fff; box-shadow:0 0 0 3px rgba(255,255,255,.35);}
-.grid {display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:14px;}
+.grid {display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:14px;}
 .kpi {background:#fff; border-radius:12px; padding:10px 8px; text-align:center; box-shadow:0 1px 4px rgba(0,0,0,.06);}
 .kpi .v {font-size:19px; font-weight:800; color:#1f2933;}
 .kpi .l {font-size:11px; color:#7b8a99; margin-top:2px;}
@@ -556,10 +800,14 @@ def chart_js(hourly):
         '  var CH={left:50,right:706,top:44,bot:235,w:760,h:340,\n'
         '    times:' + json.dumps(hourly["time"], ensure_ascii=False) + ',\n'
         '    temp:' + json.dumps(hourly["temperature_2m"]) + ',\n'
-        '    precip:' + json.dumps(hourly["precipitation"]) + ',\n'
+        '    rainfall:' + json.dumps(hourly["rainfall"]) + ',\n'
         '    ptype:' + json.dumps(hourly.get("ptype") or [0] * n) + ',\n'
         '    wind:' + json.dumps(hourly["wind_speed_10m"]) + ',\n'
-        '    gust:' + json.dumps(hourly["wind_gusts_10m"]) + '};\n'
+        '    gust:' + json.dumps(hourly["wind_gusts_10m"]) + ',\n'
+        '    apparent:' + json.dumps(hourly["apparent_temperature"]) + '};\n'
+        # ⚠️ 载荷键必须叫 rainfall：下面 JS 全程引用 CH.rainfall（曾误写成 precip 键，
+        #    导致 CH.rainfall 为 undefined → 「无法读取 concat」TypeError → 48h 图表整块空白）
+
         '  var n=CH.times.length;\n'
         '  var svg=document.getElementById("hchart");\n'
         '  function el(t,a){var e=document.createElementNS(NS,t);for(var k in a)e.setAttribute(k,a[k]);return e;}\n'
@@ -585,7 +833,7 @@ def chart_js(hourly):
         '  var tLo=Math.min(tMin,0)-2, tHi=tMax+2;\n'
         '  var wMax=Math.max.apply(null,CH.wind.concat(CH.gust).concat([1]));\n'
         '  var wHi=wMax*1.15;\n'
-        '  var pMax=Math.max.apply(null,CH.precip.concat([0.1]));\n'
+        '  var pMax=Math.max.apply(null,CH.rainfall.concat([0.1]));\n'
         '  function x(i){return CH.left+(i/(n-1))*(CH.right-CH.left);}\n'
         '  function yT(v){return CH.bot-(v-tLo)/(tHi-tLo)*(CH.bot-CH.top);}\n'
         '  function yW(v){return CH.bot-(v/wHi)*(CH.bot-CH.top);}\n'
@@ -593,11 +841,13 @@ def chart_js(hourly):
         '  // 图例：横排放底部\n'
         '  var lg=CH.left+10, ly2=CH.bot+28;\n'
         '  svg.appendChild(el("line",{x1:lg,y1:ly2,x2:lg+28,y2:ly2,stroke:"#E0822C","stroke-width":3}));\n'
-        '  svg.appendChild(txt(lg+34,ly2+4,"气温 °C","start","#E0822C",12));\n'
-        '  svg.appendChild(el("line",{x1:lg+100,y1:ly2,x2:lg+128,y2:ly2,stroke:"#0FA87A","stroke-width":2.5}));\n'
-        '  svg.appendChild(txt(lg+134,ly2+4,"均风 m/s","start","#0FA87A",12));\n'
-        '  svg.appendChild(el("line",{x1:lg+220,y1:ly2,x2:lg+248,y2:ly2,stroke:"#D84315","stroke-width":2.5,"stroke-dasharray":"7 3"}));\n'
-        '  svg.appendChild(txt(lg+254,ly2+4,"阵风 m/s","start","#D84315",12));\n'
+'  svg.appendChild(txt(lg+34,ly2+4,"气温 °C","start","#E0822C",12));\n'
+'  svg.appendChild(el("line",{x1:lg+100,y1:ly2,x2:lg+128,y2:ly2,stroke:"#0FA87A","stroke-width":2.5}));\n'
+'  svg.appendChild(txt(lg+134,ly2+4,"均风 m/s","start","#0FA87A",12));\n'
+'  svg.appendChild(el("line",{x1:lg+220,y1:ly2,x2:lg+248,y2:ly2,stroke:"#D84315","stroke-width":2.5,"stroke-dasharray":"7 3"}));\n'
+'  svg.appendChild(txt(lg+254,ly2+4,"阵风 m/s","start","#D84315",12));\n'
+'  svg.appendChild(el("line",{x1:lg+338,y1:ly2,x2:lg+366,y2:ly2,stroke:"#8E44AD","stroke-width":1.8,"stroke-dasharray":"6 4"}));\n'
+'  svg.appendChild(txt(lg+372,ly2+4,"体感 °C","start","#8E44AD",12));\n'
         '  // 网格线\n'
         '  for(var g=0;g<=4;g++){\n'
         '    var tv=tLo+(tHi-tLo)*g/4, yv=yT(tv);\n'
@@ -614,9 +864,9 @@ def chart_js(hourly):
         '  svg.appendChild(el("line",{x1:mid,y1:CH.top,x2:mid,y2:CH.bot,stroke:"#ddd","stroke-width":1,"stroke-dasharray":"3 3"}));\n'
         '  // 降水柱\n'
         '  var bw=(CH.right-CH.left)/n*0.55;\n'
-        '  for(var i=0;i<n;i++){ if(CH.precip[i]>0.05 || CH.ptype[i]){var bx=x(i)-bw/2, bh=Math.max(CH.bot-yP(CH.precip[i]),3); var pcol=(PT_FILL[CH.ptype[i]]||PT_FB); svg.appendChild(el("rect",{x:bx,y:CH.bot-bh,width:bw,height:bh,fill:pcol,rx:1}));} }\n'
-        '  // 小时级短时降水阈值线（大雨 2 / 暴雨 5 / 大暴雨 10 mm/h，与物探看板 RAIN_H 一致）\n'
-        '  var PTH=[{v:2,c:"#E0822C",t:"大雨 2"},{v:5,c:"#C0392B",t:"暴雨 5"},{v:10,c:"#7B1F14",t:"大暴雨 10"}];\n'
+        '  for(var i=0;i<n;i++){ if(CH.rainfall[i]>0.05 || CH.ptype[i]){var bx=x(i)-bw/2, bh=Math.max(CH.bot-yP(CH.rainfall[i]),3); var pcol=(PT_FILL[CH.ptype[i]]||PT_FB); svg.appendChild(el("rect",{x:bx,y:CH.bot-bh,width:bw,height:bh,fill:pcol,rx:1}));} }\n'
+        '  // 小时级短时降水阈值线（大雨 3 / 暴雨 6 / 大暴雨 15 mm/h，与物探看板 RAIN_H 一致）\n'
+        '  var PTH=[{v:3,c:"#E0822C",t:"大雨 3"},{v:6,c:"#C0392B",t:"暴雨 6"},{v:15,c:"#7B1F14",t:"大暴雨 15"}];\n'
         '  for(var qi=0;qi<PTH.length;qi++){ if(PTH[qi].v>pMax) continue; var py2=yP(PTH[qi].v);\n'
         '    svg.appendChild(el("line",{x1:CH.left,y1:py2,x2:CH.right,y2:py2,stroke:PTH[qi].c,"stroke-width":1.1,"stroke-dasharray":"5 4",opacity:.7}));\n'
         '    svg.appendChild(txt(CH.right-5,py2-4,PTH[qi].t+" mm/h","end",PTH[qi].c,10.5)); }\n'
@@ -624,6 +874,9 @@ def chart_js(hourly):
         '  var tPts=""; for(var i=0;i<n;i++) tPts+=x(i).toFixed(1)+","+yT(CH.temp[i]).toFixed(1)+" ";\n'
         '  svg.appendChild(el("polyline",{points:tPts.trim(),fill:"none",stroke:"#E0822C","stroke-width":2.8,"stroke-linejoin":"round"}));\n'
         '  for(var i=0;i<n;i+=6){ svg.appendChild(el("circle",{cx:x(i).toFixed(1),cy:yT(CH.temp[i]).toFixed(1),r:2.2,fill:"#E0822C",stroke:"#fff","stroke-width":1})); }\n'
+'  // 体感温度线：虚线（同温度轴，两者均 °C）\n'
+'  var aPts=""; for(var i=0;i<n;i++) aPts+=x(i).toFixed(1)+","+yT(CH.apparent[i]).toFixed(1)+" ";\n'
+'  svg.appendChild(el("polyline",{points:aPts.trim(),fill:"none",stroke:"#8E44AD","stroke-width":1.8,"stroke-dasharray":"6 4","stroke-linejoin":"round"}));\n'
         '  // 风力带（均风~阵风半透明填充）\n'
         '  var bandPts=""; for(var i=0;i<n;i++) bandPts+=x(i).toFixed(1)+","+yW(CH.wind[i]).toFixed(1)+" ";\n'
         '  for(var i=n-1;i>=0;i--) bandPts+=x(i).toFixed(1)+","+yW(CH.gust[i]).toFixed(1)+" ";\n'
@@ -647,7 +900,7 @@ def chart_js(hourly):
         '  function paintRead(i){\n'
         '    while(rbox.firstChild) rbox.removeChild(rbox.firstChild);\n'
         '    var ptS=(PT_TXT[CH.ptype[i]]||"");\n'
-        '    var rows=[["降水 ",CH.precip[i]+" mm/h"+(ptS?" "+ptS:""),"#0D47A1"],["气温 ",CH.temp[i]+" ℃","#8A4B00"],["阵风 ",CH.gust[i]+" m/s","#8A2A0E"],["均风 ",CH.wind[i]+" m/s","#0F5B4C"]];\n'
+        '    var rows=[["降水 ",CH.rainfall[i]+" mm/h"+(ptS?" "+ptS:""),"#0D47A1"],["气温 ",CH.temp[i]+" ℃","#8A4B00"],["体感 ",CH.apparent[i]+" ℃","#8E44AD"],["阵风 ",CH.gust[i]+" m/s","#8A2A0E"],["均风 ",CH.wind[i]+" m/s","#0F5B4C"]];\n'
         '    var bw=0,j; for(j=0;j<rows.length;j++){bw=Math.max(bw,cw(rows[j][0])+cw(rows[j][1]));} bw+=22;\n'
         '    var lh=16,pady=6,bh=rows.length*lh+pady*2;\n'
         '    var sx=x(i); var bx=sx+12; if(bx+bw>CH.right) bx=sx-12-bw; if(bx<CH.left) bx=CH.left;\n'
@@ -668,7 +921,7 @@ def chart_js(hourly):
         '    cmW.setAttribute("cx",xx); cmW.setAttribute("cy",yW(CH.wind[i]));\n'
         '    cmG.setAttribute("cx",xx); cmG.setAttribute("cy",yW(CH.gust[i]));\n'
         '    var ptS=(PT_TXT[CH.ptype[i]]||"");\n'
-        '    valBox.innerHTML=\'<span class="t">\'+fmt(CH.times[i])+\'</span>\'+eic("rain",lvR(CH.precip[i]))+\'降水 <b class="pv">\'+CH.precip[i]+\' mm/h\'+(ptS?\' \'+ptS:\'\')+\'</b> \'+eic("temp")+\'气温 <b class="tv">\'+CH.temp[i]+\'℃</b> \'+eic("wind",lvG(CH.gust[i]))+\'阵风 <b class="gv">\'+CH.gust[i]+\' m/s</b> \'+eic("wind")+\'均风 <b class="wv">\'+CH.wind[i]+\' m/s</b>\';\n'
+        '    valBox.innerHTML=\'<span class="t">\'+fmt(CH.times[i])+\'</span>\'+eic("rain",lvR(CH.rainfall[i]))+\'降水 <b class="pv">\'+CH.rainfall[i]+\' mm/h\'+(ptS?\' \'+ptS:\'\')+\'</b> \'+eic("temp")+\'气温 <b class="tv">\'+CH.temp[i]+\'℃</b> \'+eic("heat")+\'体感 <b style="color:#8E44AD;background:#F3E5F5">\'+CH.apparent[i]+\'℃</b> \'+eic("wind",lvG(CH.gust[i]))+\'阵风 <b class="gv">\'+CH.gust[i]+\' m/s</b> \'+eic("wind")+\'均风 <b class="wv">\'+CH.wind[i]+\' m/s</b>\';\n'
         '    paintRead(i);\n'
         '  }\n'
         '  // 时间轴滑块已移除：改为在图表上点击 / 拖动选时\n'
@@ -753,30 +1006,51 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
     """ph = 近 48 小时最大小时降水（mm/h），由调用方从 hourly[:48] 现算后传入。"""
     name = rec["name"]; l1, l2, l3 = rec["level1"], rec["level2"], rec["level3"]
     dates = [d["date"] for d in daily]
-    precip = [d["precip"] for d in daily]
+    precip = [d["rainfall"] for d in daily]
     ptypes = [d.get("ptype", 0) for d in daily]        # 0无 / 1降雨 / 2降雪 / 3雨夹雪
     tmin = [d["tempMin"] for d in daily]; tmax = [d["tempMax"] for d in daily]
     wmax = [d["windMax"] for d in daily]; gmax = [d["gustMax"] for d in daily]
-    chart_precip = svg_bars(dates, precip, "#4A90D9", sid="dchart-precip", days=dates,
-                            unit="mm", label="降水", ptypes=ptypes)
-    chart_temp = svg_lines(dates, [("最高温", tmax, "#E0822C"), ("最低温", tmin, "#2E7DA8")],
-                           sid="dchart-temp", days=dates, unit="℃")
+    # 降雪水当量（mm）：并入逐日降水图（与降雨并列柱）
+    snow = [d.get("snowfall") or 0.0 for d in daily]
+    # 体感温度（°C）：并入逐日气温图（虚线）；缺字段时整组不画，避免出现全 0 假曲线
+    _appMax = [d.get("apparentMax") for d in daily]
+    _appMin = [d.get("apparentMin") for d in daily]
+    has_app = any(v is not None for v in _appMax) and any(v is not None for v in _appMin)
+    temp_series = [("最高温", tmax, "#E0822C"), ("最低温", tmin, "#2E7DA8")]
+    if has_app:
+        _aMax = [v if v is not None else 0.0 for v in _appMax]
+        _aMin = [v if v is not None else 0.0 for v in _appMin]
+        temp_series += [("最高体感", _aMax, "#D84315", {"labels": False, "dash": "6 4"}),
+                        ("最低体感", _aMin, "#7E57C2", {"labels": False, "dash": "6 4"})]
+    # 逐日最低能见度（m）：缺字段时不画该图
+    _visMin = [d.get("visMin") for d in daily]
+    has_vis = any(v is not None for v in _visMin)
+    visMin = [v if v is not None else 0 for v in _visMin]
+    chart_precip = svg_bars(dates, precip, "#2E86DE", sid="dchart-precip", days=dates,
+                            unit="mm", label="降雨", ptypes=ptypes,
+                            extra=[("降雪", snow, "#5DD6E8")])
+    # 逐日气温：最高/最低温 + 最高/最低体感（体感并入气温图，2026-10-16 用户定）。
+    # 体感画虚线且不逐点标值——4 条线同时标值会互相遮挡；点选日期时数值框仍给出全部系列的值。
+    chart_temp = svg_lines(dates, temp_series, sid="dchart-temp", days=dates, unit="℃")
     chart_wind = svg_lines(dates, [("阵风", gmax, "#C0392B"), ("均风", wmax, "#7E57C2")],
                            sid="dchart-wind", days=dates, unit="m/s")
-    cards = risk_cards(daily, s, ph)
+    chart_vis = (svg_lines(dates, [("最低能见度", visMin, "#7E57C2")], sid="dchart-vis", days=dates, unit="m")
+                 if has_vis else "")
+    # 未来 48 小时逐小时图：仅取前 48 个小时（须先算，_near_summary/文案/风险卡都要用）
+    hourly48 = {k: (v[:48] if isinstance(v, list) else v) for k, v in hourly.items()}
+    n_hour = len(hourly48.get("time", []))
+    # 风险卡与作业建议同样按48h 口径（风/温不用全窗 14 天极值）
+    cards = risk_cards(daily, s, ph, hourly48)
     cards_html = "".join(
         f'<div class="rc {c[0]}"><span class="tag">{c[2]}'
         + (f"（{rain_hour_label(ph)}）" if "泥泞" in c[1] and ph >= RAIN_H["heavy"] else "")
         + f'</span>'
         f'<div class="rt">{eic(card_icon(c[1]), c[0], size='s')}{c[1]}</div>'
         f'<div class="rb">{c[3]}</div></div>' for c in cards)
-    adv = "".join(f"<li>{b}</li>" for b in impact_bullets(daily, s, ph))
+    adv = "".join(f"<li>{b}</li>" for b in impact_bullets(daily, s, ph, hourly48))
     sub = " · ".join([x for x in [l1, l2, l3] if x])
     # 未来 48 小时（近 2 天）口径：重点提示 Tab 的主口径
     near = daily[:2]
-    # 未来 48 小时逐小时图：仅取前 48 个小时（须先算，_near_summary/文案都要用）
-    hourly48 = {k: (v[:48] if isinstance(v, list) else v) for k, v in hourly.items()}
-    n_hour = len(hourly48.get("time", []))
     sNear = _near_summary(near, ph, hourly48)
     far = far_alert(daily)
     if far:
@@ -788,12 +1062,22 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
                     '<div class="rc ok"><div class="rb">未来 2-14 天暂无明显重大极端天气，临近时再提示。</div></div></div>')
     near_start = near[0]["date"] if near else rec.get("start_date", "")
     HERO_CSS = hero_css()   # 页头背景图 CSS（无图时为空串，静默降级）
-    _kpi_eic = {            # KPI 四宫格的要素图标与风险等级：key 与 sNear 字段一一对应
+    _kpi_eic = {            # KPI 六宫格：key 顺序即展示顺序；value=(图标要素, 风险等级)
         "totalPrecip": ("rain", lv_rain(sNear["totalPrecip"])),
         "maxGust":     ("wind", lv_gust(sNear["maxGust"])),
+        "maxWind":     ("wind", lv2eic(JW.grade_wind(sNear["maxWind"]) if sNear["maxWind"] is not None else 0)),
+        "minVis":      ("fog",  lv2eic(JW.grade_vis(sNear["minVis"]) if sNear["minVis"] is not None else 0)),
+        "minApparent": ("temp", lv2eic(max(
+                            [JW.grade_utci(sNear["minApparent"])[0] if sNear["minApparent"] is not None else 0,
+                             JW.grade_utci(sNear["maxApparent"])[0] if sNear["maxApparent"] is not None else 0]))),
         "maxTemp":     ("heat", lv_temp(sNear["maxTemp"])),
-        "minTemp":     ("temp", lv_temp(sNear["minTemp"])),
     }
+    # 两周图版块拼装（降雪已并入降水图、体感已并入气温图；能见度缺数据时整块不出现）
+    _tapp_leg = ('<i style="background:#D84315"></i>最高体感<i style="background:#7E57C2"></i>最低体感（虚线；舒适度预警由体感承担）'
+                 if has_app else "")
+    _vblock = (f'<div class="chart-h">逐日能见度（m）</div>\n'
+               f'<div class="legend">当日最低能见度（m），越低越影响行车与吊装；{eic("fog")}低于 1000m 即进入预警</div>{chart_vis}'
+               if has_vis else "")
     html = f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{name} · 天气看板</title><style>{CSS}{HERO_CSS}</style></head>
@@ -816,9 +1100,11 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
 {far_html}
 <div class="grid">
 <div class="kpi"><div class="v">{eic(*_kpi_eic['totalPrecip'], size="xs")}{sNear['totalPrecip']}</div><div class="l">48h降水 mm</div></div>
-<div class="kpi"><div class="v">{eic(*_kpi_eic['maxGust'], size="xs")}{sNear['maxGust']}</div><div class="l">48h最大阵风 m/s</div></div>
-<div class="kpi"><div class="v">{eic(*_kpi_eic['maxTemp'], size="xs")}{sNear['maxTemp']}</div><div class="l">48h最高温 °C</div></div>
-<div class="kpi"><div class="v">{eic(*_kpi_eic['minTemp'], size="xs")}{sNear['minTemp']}</div><div class="l">48h最低温 °C</div></div>
+<div class="kpi"><div class="v">{eic(*_kpi_eic['maxGust'], size="xs")}{sNear['maxGust'] if sNear['maxGust'] is not None else '—'}</div><div class="l">48h最大阵风 m/s</div></div>
+<div class="kpi"><div class="v">{eic(*_kpi_eic['maxWind'], size="xs")}{sNear['maxWind'] if sNear['maxWind'] is not None else '—'}</div><div class="l">48h最大均风 m/s</div></div>
+<div class="kpi"><div class="v">{eic(*_kpi_eic['minVis'], size="xs")}{sNear['minVis'] if sNear['minVis'] is not None else '—'}</div><div class="l">48h最低能见度 m</div></div>
+<div class="kpi"><div class="v">{eic(*_kpi_eic['minApparent'], size="xs")}{sNear['minApparent'] if sNear['minApparent'] is not None else '—'}</div><div class="l">48h最低体感 °C</div></div>
+<div class="kpi"><div class="v">{eic(*_kpi_eic['maxTemp'], size="xs")}{sNear['maxTemp'] if sNear['maxTemp'] is not None else '—'}</div><div class="l">48h最高温 °C</div></div>
 </div>
 <div class="card"><h2><span class="dot" style="background:var(--sev)"></span>风险面板</h2>{cards_html}</div>
 <div class="card"><h2><span class="dot" style="background:var(--sev)"></span>作业影响与建议</h2>
@@ -837,11 +1123,12 @@ def render_point(rec, daily, s, sev, risk, hourly, sev3=0, daily3=None, ph=0.0):
 <div class="card"><h2><span class="dot" style="background:var(--sev)"></span>未来 两周逐日天气<span id="dayInfo"></span></h2>
 <div class="legend"><b>点击任意图表选择日期</b>，图上即时显示该日各要素具体数值（再点同处取消；图表本身不动）</div>
 <div class="chart-h">逐日降水（mm）</div>
-<div class="legend">柱颜色＝降水类型：{ptype_legend_html()}</div>{chart_precip}
+<div class="legend">{eic("rain")}<i style="background:#2E86DE"></i>降雨<i style="background:#5DD6E8"></i>降雪（水当量，与降雨并列）</div>{chart_precip}
 <div class="chart-h">逐日气温（°C）</div>
-<div class="legend">{eic("temp")}<i style="background:#E0822C"></i>最高温<i style="background:#2E7DA8"></i>最低温</div>{chart_temp}
+<div class="legend">{eic("temp")}<i style="background:#E0822C"></i>最高温<i style="background:#2E7DA8"></i>最低温{_tapp_leg}</div>{chart_temp}
 <div class="chart-h">逐日阵风 / 均风（m/s）</div>
 <div class="legend">{eic("wind")}<i style="background:#C0392B"></i>阵风（日最大）<i style="background:#7E57C2"></i>均风（日最大）</div>{chart_wind}
+{_vblock}
 </div>
 </div>
 
@@ -895,8 +1182,11 @@ def main():
         daily3 = daily[:2]
         # 近 48 小时最大小时降水（mm/h）：只看前 48 个小时，供 48h 口径的等级/卡片/文案使用
         hourly48 = {k: (v[:48] if isinstance(v, list) else v) for k, v in hourly.items()}
+        hourly48["_daily2"] = daily[:2]   # hourly 缺失时的风温兜底
         ph = phour_max(hourly48)
-        sev3 = sev_of_recent(hourly48)
+        # 48h 等级的风/温同样取逐小时窗口（不用 daily[:2]、不用 summary 全窗值）
+        sev3 = sev_of_recent(daily3, ph, el48=h48_elements(hourly48),
+                             snow_h=snow_hour_max_48(hourly48))
         recs.append({"name": m["name"], "level1": m["level1"], "level2": m["level2"],
                      "level3": m["level3"], "slug": slug, "file": slug + ".html",
                      "sev": sev, "sev3": sev3, "start": m["start_date"]})
