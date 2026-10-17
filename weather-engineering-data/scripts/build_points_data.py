@@ -7,7 +7,7 @@ weather-engineering-data —— Markdown 点位表 → 逐点天气数据文件�
 
 输入：
   - all_points_info.md（点位 / 经度 / 纬度）
-  - engineering_ta_map.json（点位名 → 九章目标区 ta_id；含 all_points_info 全字段，
+  - engineering_ta_map.json（位于 engineering/kml/；点位名 → 九章目标区 ta_id；含 all_points_info 全字段，
     由用户侧在九章注册后回填 ta_id；兼容旧名 ta_map.json）
 动作：解析所有点位 → 按 ta_id 调 jozzon-mcp 拉「未来 2 周 / 14 天」逐小时天气
       → 为每个点位写出独立 JSON 数据文件（拼音文件名，与旧 *_data.json 同目录互不冲突）。
@@ -131,10 +131,7 @@ def main():
 
     if args.tamap is None:
         base = os.path.dirname(os.path.abspath(args.datadir))
-        cand = os.path.join(base, "engineering_ta_map.json")
-        if not os.path.exists(cand):
-            cand = os.path.join(base, "ta_map.json")     # 兼容旧文件名
-        args.tamap = cand
+        args.tamap = os.path.join(base, "kml", "engineering_ta_map.json")   # ta_map 已移至 kml/
 
     if not os.path.exists(args.md):
         print(f"ERROR: Markdown 文件不存在: {args.md}")
@@ -177,7 +174,11 @@ def main():
     times = [str(t) for t in locs[0]["time"]]
     dailyDates = sorted({t[:10] for t in times})
 
-    def var(loc, key):
+    def var(loc, key, keep_none=False):
+        # keep_none：能见度用 —— x1_visibility 只有前 162h 有值（之后为 null），
+        # 落 0 会被误读成「能见度 0 m」，故保留 None（下游一律 `if v and v > 0` 过滤）
+        if keep_none:
+            return [float(v) if isinstance(v, (int, float)) else None for v in loc.get(key, [])]
         return [float(v) if isinstance(v, (int, float)) else 0.0 for v in loc.get(key, [])]
 
     def daily_for(t, rf, sn, w, g, apr, vs):
@@ -220,7 +221,7 @@ def main():
         w = var(loc, "wind_speed_10m")
         g = var(loc, "wind_gusts_10m")
         apr = var(loc, "apparent_temperature")
-        vs = var(loc, "visibility")
+        vs = var(loc, "visibility", keep_none=True)
         daily = daily_for(t, rf, sn, w, g, apr, vs)
         # 降雪小时峰值（mm/h，jozzon-mcp 已统一 mm 口径）
         snow_h = max(sn) if sn else 0.0
@@ -271,7 +272,7 @@ def main():
                 "wind_speed_10m": [round(v, 1) for v in w],
                 "wind_gusts_10m": [round(v, 1) for v in g],
                 "apparent_temperature": [round(v, 1) for v in apr],
-                "visibility": [round(v, 1) for v in vs],
+                "visibility": [round(v, 1) if v is not None else None for v in vs],
                 "ptype": [ptype_of(rv, sv, tv) for rv, sv, tv in zip(rf, sn, t)],
             },
             "daily": daily,

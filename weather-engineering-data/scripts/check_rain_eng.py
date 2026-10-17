@@ -129,6 +129,23 @@ ok(ns["pHourMax"] == 6.0 and ns["totalPrecip"] == 0,
 a = R.alert_desc(daily([0.0, 0.0])[:2], dict(SUMMARY, totalPrecip=0), 6.0)
 ok("短时暴雨" in a, "alert_desc 带小时级", a[:70])
 
+# 横幅正文已改为逐要素清单（2026-10-17 用户口径）：只列达阈值要素、按级别降序、要素序兜底
+it = R.alert_items(dict(SUMMARY, pHourMax=6.0, maxGust=18.0, maxWind=5.0,
+                        maxApparent=30.0, minApparent=10.0, minVis=300), {})
+kinds = [x["kind"] for x in it]
+ok(kinds[:2] == ["rain", "gust"], "alert_items 按级别降序（暴雨 lv4 > 八级阵风 lv2）", str(kinds))
+ok("vis" in kinds and "wind" not in kinds and "snow" not in kinds,
+   "alert_items 只列达阈值要素（未达的均风/降雪不占行）", str(kinds))
+_lv = [x["lv"] for x in it]
+ok(_lv == sorted(_lv, reverse=True), "alert_items 级别单调不增", str(_lv))
+ok(not R.alert_items(dict(SUMMARY, pHourMax=0.1, maxGust=2.0, maxWind=1.0,
+                          maxApparent=22.0, minApparent=18.0, minVis=20000), {}),
+   "alert_items 全要素未达阈值时返回空（页面给「适宜作业」兜底）")
+_ut = R.alert_items(dict(SUMMARY, pHourMax=0.0, maxGust=0.0, maxWind=0.0,
+                         maxApparent=40.0, minApparent=-30.0, minVis=20000), {})
+ok(len(_ut) == 1 and _ut[0]["kind"] == "utci" and _ut[0]["val"] == 40.0,
+   "alert_items 体感冷热两端取更严重一侧（同 3 级取更极端）", str(_ut))
+
 print("== 未来 2 周口径不受影响")
 far = R.far_alert(daily([0.0] * 12))       # 全 0 也不该误报
 ok(far is None, "far_alert 远端口径未被改动")

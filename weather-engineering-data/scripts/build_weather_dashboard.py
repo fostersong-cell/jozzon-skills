@@ -178,8 +178,8 @@ TEMPLATE = r"""<!DOCTYPE html>
   <div class="chart-wrap"><svg class="chart" id="windChart" viewBox="0 0 680 220" preserveAspectRatio="none"></svg></div>
   <div class="legend"><span><i style="background:#1F7A6B"></i>持续风速</span>
     <span><i style="background:#8E44AD"></i>阵风</span>
-    <span><i style="background:#E0822C"></i>6级 10.8m/s</span>
-    <span><i style="background:#C0392B"></i>8级 17.2m/s</span></div>
+    <span><i style="background:#E0822C"></i>8级 17.2m/s</span>
+    <span><i style="background:#C0392B"></i>10级 24.5m/s</span></div>
 </div>
 
 <div class="card">
@@ -258,7 +258,7 @@ document.getElementById("metaLine").textContent =
   `${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`;
 
 const alertBox=document.getElementById("alertBox");
-const hasExtreme = (P.tmax>=35)||(P.tmin<=0)||(P.pHourMax>=20)||(P.pMax>=50)||(P.gustMax>=17.2)||(P.windMax>=10.8);
+const hasExtreme = (P.tmax>=35)||(P.tmin<=0)||(P.pHourMax>=20)||(P.pMax>=50)||(P.gustMax>=24.5)||(P.windMax>=10.8);
 if(!hasExtreme){
   const a=document.createElement("div");
   a.className="alert ok";
@@ -277,7 +277,7 @@ if(P.focusStart){
 const stats=[
   ["最高气温", P.tmax+"°C", P.tmax>=35?"高温预警":"无高温预警"],
   ["最低气温", P.tmin+"°C", P.tmin<=0?"注意霜冻/结冰":"无霜冻/结冰"],
-  ["最大阵风", P.gustMax+"<small> m/s</small>", P.gustMax>=17.2?"≥8级，需停工":(P.gustMax>=10.8?"≥6级，加固":"约5级，不影响")],
+  ["最大阵风", P.gustMax+"<small> m/s</small>", P.gustMax>=24.5?"≥10级，需停工":(P.gustMax>=17.2?"≥8级，加固":"约5级，不影响")],
   ["最大日降水", (P.pMax||0)+"<small> mm</small>", P.pMaxDay?(P.pMax>=50?"暴雨 "+P.pMaxDay.slice(5):(P.pMax>=25?"大雨 "+P.pMaxDay.slice(5):"中雨 "+P.pMaxDay.slice(5))):"—"],
 ];
 document.getElementById("statsBox").innerHTML = stats.map(s=>
@@ -301,7 +301,7 @@ const wMaxAll=Math.max(...H.gust, ...H.wind);
 const wYMax=Math.max(24, Math.ceil(wMaxAll/4)*4 + 4);
 lineChart(document.getElementById("windChart"),
   [{data:H.wind,color:"#1F7A6B",fill:false},{data:H.gust,color:"#8E44AD",fill:false,markMax:true}],
-  {yMin:0,yMax:wYMax,thresholds:[{v:10.8,color:"#E0822C",label:"6级10.8"},{v:17.2,color:"#C0392B",label:"8级17.2"}],
+  {yMin:0,yMax:wYMax,thresholds:[{v:17.2,color:"#E0822C",label:"8级17.2"},{v:24.5,color:"#C0392B",label:"10级24.5"}],
    xLabel:i=>H.time[i].slice(5,10)});
 
 const ib=document.getElementById("impactBox");
@@ -314,12 +314,12 @@ if(P.pMax>=25){ out+=card("warn","降水 / 泥泞",{cls:"warn",t:"注意"},
   `${P.focusStart.slice(5)} ~ ${P.focusEnd.slice(5)} 连续降雨累计 <b>${P.focusTotal}mm</b>，其中 ${P.pMaxDay.slice(5)} 达 <b>${P.pMax}mm（大雨）</b>。山区便道易泥泞、车辆通行困难；坡面含水升高，<b>滑坡/泥石流风险上升</b>；钻井与地震排列设备需做好防雨防潮。建议：推迟涉水与陡坡段施工，雨停后待便道稍干再进场，电缆接头包覆防水。`); }
 else { out+=card("ok","降水 / 泥泞",{cls:"ok",t:"安全"},
   `预报期内日降水均 ≤25mm，以零星小雨为主，对便道与设备影响有限，常规防雨即可。`); }
-if(P.gustMax>=17.2){ out+=card("danger","大风 / 阵风",{cls:"danger",t:"预警"},
-  `阵风达 ${P.gustMax} m/s（≥8级），钻机塔架、重力仪/磁力仪天线与帐篷稳定性受严重影响，高处作业必须停工。`); }
+if(P.gustMax>=24.5){ out+=card("danger","大风 / 阵风",{cls:"danger",t:"预警"},
+  `阵风达 ${P.gustMax} m/s（≥10级），钻机塔架、重力仪/磁力仪天线与帐篷稳定性受严重影响，高处作业必须停工。`); }
 else if(P.windMax>=10.8){ out+=card("warn","大风 / 阵风",{cls:"warn",t:"注意"},
   `持续风速达 ${P.windMax} m/s（≥6级），钻机与高空设备需加固，谨慎安排吊装/高处作业。`); }
 else { out+=card("ok","大风 / 阵风",{cls:"ok",t:"安全"},
-  `最大阵风 ${P.gustMax} m/s（约5级及以下），不影响钻机、天线及帐篷，常规作业即可。`); }
+  `最大阵风 ${P.gustMax} m/s（7级及以下），不影响钻机、天线及帐篷，常规作业即可。`); }
 if(P.tmax>=35){ out+=card("danger","高温",{cls:"danger",t:"预警"},`最高气温 ${P.tmax}°C，人员易中暑、设备过热电池衰减，避开正午高强度作业、配备降温与补水。`); }
 else if(P.tmin<=0){ out+=card("warn","低温 / 结冰",{cls:"warn",t:"注意"},`最低气温 ${P.tmin}°C，高海拔段可能结冰，人员保暖、电池效能下降需备用电源。`); }
 else { out+=card("ok","气温",{cls:"ok",t:"适宜"},`气温区间 ${P.tmin}~${P.tmax}°C，体感适宜；高海拔早晚偏凉，注意人员保暖与仪器低温启动。`); }

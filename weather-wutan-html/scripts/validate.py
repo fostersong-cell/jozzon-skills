@@ -9,13 +9,17 @@
   4. 检查 body.sevN 类是否按严重程度正确挂载（severity 变色依据）
   5. 输出 PASS / FAIL 与关键诊断。
 
-⚠️ 断言口径已于 2026-10-16 同步到当前 DOM / 图表口径（此前会误报 FAIL，勿再退回旧断言）：
-  - `#riskReason` 面板现行结构是 `.rr-h` + **`.rr-cur`（当前时刻）** + **`.rr-valrow`（降水/气温/阵风/均风 四个 `<b>` 值）**；
-    **旧的 `.rr-pc`×4（要素级值四宫格）与 `.rr-sev`（面板内风险徽章）已不再输出**（CSS 尚存但 DOM 不生成，
-    风险等级改由顶部 `#alertBox` 与 `body.sevN` 承担）→ 故不再断言 `.rr-pc` / `.rr-sev`。
-  - `#explorerCharts` 现在是**固定四图**（`EXP_CHARTS=["precip","temp","wind","vis"]`），`.ec` 数量应为 **3~4**：
-    **九章后端当前没有 `visibility` 要素**（`meta.data_source` 侧 `hasVis=false`），能见度图按 `pt.hasVis` 守卫正确省略，
-    故实测常为 **3**。只有当后端补齐能见度后才会回到 4。断言据此放宽为 `3 <= ec <= 4`，**不是**模板缺图。
+⚠️ 断言口径已于 2026-10-17 同步到当前 DOM / 图表口径（此前会误报 FAIL，勿再退回旧断言）：
+  - **`#riskReason` 面板已整块删除**（2026-10-17 用户要求：地图下方各要素值说明去掉，点位信息并入图表底部读数条），
+    故不再断言 `.rr-cur` / `.rr-valrow`；改为断言 `#riskReason` **不存在**。
+  - **顶部「重点提示」= 逐要素最高级别风险清单**（`#alertBox .ailist .ai`，一条一行：要素/等级/数值/点名牌），
+    至少 1 条（无风险时也有一条「天气平稳」占位）；远期描述 `.far` 允许 0~1 条。
+  - **关键指标固定 6 格**（`#statsBox .stat`）：累计降水 / 最大降水 / 最高气温 / 最低气温 / 最大风速 / 最低能见度，
+    每格内 `.vr > .pp` 为点名牌。数量必须 **=6**。
+  - `#explorerCharts` 是**固定四图**（`EXP_CHARTS=["precip","temp","wind","vis"]`），`.ec` 数量应为 **3~4**：
+    能见度图在 `series.visMin` 全为 null 时被数据驱动守卫正确省略，故实测常为 **3**；
+    断言放宽为 `3 <= ec <= 4`，**不是**模板缺图。
+  - 未来两周页的「点击任意图表选择日期…」说明行**已删除**，`.ec-note` 在 `#explorerCharts` 内必须为 0。
 
 依赖: pip install websocket-client；本机需安装 Google Chrome。
 用法:
@@ -180,16 +184,21 @@ try:
         errors.append("selectPoint 调用失败: " + str(click_res))
         ok = False
 
-    # 检查地图下方面板（当前时刻 .rr-cur + 四值行 .rr-valrow）
+    # 检查顶部「重点提示」逐要素清单 / 关键指标 6 格 / 已删面板是否真的删掉
     mid = send("Runtime.evaluate",
-               {"expression": "(function(){var c=document.getElementById('riskReason');"
-                "var a=document.getElementById('alertBox');"
-                "var vr=c?c.querySelector('.rr-valrow'):null;"
-                "return JSON.stringify({rrPresent: !!c, rrDisplay: c?c.style.display:'none',"
-                "rrCur: c?!!c.querySelector('.rr-cur'):false,"
-                "rrValrow: !!vr,"
-                "rrVals: vr?vr.querySelectorAll('b').length:0,"
-                "alertText: a?a.textContent.slice(0,40):'',"
+               {"expression": "(function(){var a=document.getElementById('alertBox');"
+                "var s=document.getElementById('statsBox');"
+                "var h=document.getElementById('hourlyCharts');"
+                "return JSON.stringify({"
+                "ai: a?a.querySelectorAll('.ailist .ai').length:0,"
+                "far: a?a.querySelectorAll('.far').length:0,"
+                "stat: s?s.querySelectorAll('.stat').length:0,"
+                "pp: s?s.querySelectorAll('.stat .vr .pp').length:0,"
+                "rrPresent: !!document.getElementById('riskReason'),"
+                "hvalPn: h?h.querySelectorAll('#hval .pn').length:0,"
+                "hleg: h?h.querySelectorAll('.hleg .hl').length:0,"
+                "note2w: document.querySelectorAll('#explorerCharts .ec-note').length,"
+                "alertText: a?a.textContent.slice(0,60):'',"
                 "sevClass: document.body.className});})()",
                 "returnByValue": True})
     res = recv_until(mid)
@@ -211,23 +220,20 @@ try:
         pass
 
     rr_present = diag.get("rrPresent", False)
-    rr_display = diag.get("rrDisplay", "none")
-    rr_vals = diag.get("rrVals", 0)
+    ai_n = diag.get("ai", 0)
+    stat_n = diag.get("stat", 0)
     sev_class = diag.get("sevClass", "")
-    if not rr_present:
-        errors.append("地图下方风险面板缺失 (#riskReason 不存在)")
+    if rr_present:
+        errors.append("已废弃的「地图下方要素说明」面板仍存在 (#riskReason)")
         ok = False
-    if rr_display == "none":
-        errors.append("点击采样点后风险面板未显示 (display=none)")
+    if ai_n < 1:
+        errors.append("重点提示缺少逐要素清单 (.ailist .ai)")
         ok = False
-    if not diag.get("rrCur"):
-        errors.append("面板缺少「当前时刻」行 (.rr-cur)")
+    if stat_n != 6:
+        errors.append(f"关键指标应为 6 格（累计降水/最大降水/最高气温/最低气温/最大风速/最低能见度），实际={stat_n}")
         ok = False
-    if not diag.get("rrValrow"):
-        errors.append("面板缺少四值行 (.rr-valrow)")
-        ok = False
-    elif rr_vals != 4:
-        errors.append("四值行内数值应为 4 个（降水/气温/阵风/均风），实际=" + str(rr_vals))
+    if diag.get("note2w"):
+        errors.append("未来两周页仍有「点击任意图表选择日期…」说明行 (.ec-note)")
         ok = False
     if "sev" not in sev_class:
         errors.append("severity 着色类未挂载 (body.className=" + sev_class + ")")
@@ -252,8 +258,10 @@ try:
         print("提示: .ec=3 —— 能见度图因后端无 visibility 要素被守卫省略（正常，非缺图）")
 
     print("==== 校验结果 ====")
-    print("风险面板 present/display:", rr_present, rr_display)
-    print("当前时刻行 .rr-cur:", diag.get("rrCur"), "| 四值行 .rr-valrow:", diag.get("rrValrow"), "| 数值个数:", rr_vals)
+    print("已删面板 #riskReason 仍存在:", rr_present)
+    print("重点提示逐要素条数 .ai:", ai_n, "| 远期块 .far:", diag.get("far", 0))
+    print("关键指标格数 .stat:", stat_n, "| 点名牌 .pp:", diag.get("pp", 0))
+    print("48h 读数条点名牌 .hval .pn:", diag.get("hvalPn", 0), "| 图外图例项 .hleg .hl:", diag.get("hleg", 0))
     print("未来2周固定四图 .ec 块数:", ec_count)
     print("重点关注文本:", diag.get("alertText", ""))
     print("body 类名:", sev_class)

@@ -10,7 +10,9 @@ build_points_index.py —— 石油工程「未来 两周」点位看板 index.h
       生成，meta.kind=="point"，取数窗口为「下一日 0 时起未来 两周 / 14 天」）
 输出：engineering/html/index.html
       * 顶部：未来 两周窗口说明 + 全窗风险等级分布（红/橙/黄/绿计数）
-      * 未来 2 天（48 小时）风险短描述块（由 gen_points_summary.build_short 生成，约 50 字）
+      * 未来 2 天（48 小时）风险概述块：按「要素 × 级别」分行
+        （gen_points_summary.overview_elems，只列 2 级及以上，一行一个「要素 · 等级」+
+        达成该级别的点位名；级别从高到低，与物探 index 同款）
       * 主体：按「一级 + 二级」分组的可折叠卡片，组内「三级 + 点位」按风险等级降序，
         点击条目跳转到该点位的独立看板 html
 
@@ -18,14 +20,17 @@ build_points_index.py —— 石油工程「未来 两周」点位看板 index.h
 """
 import os, sys, json, glob, argparse, base64
 
-# ---------- 复用 gen_points_summary 的「未来 2 天风险」短描述（同目录） ----------
+# ---------- 复用 gen_points_summary 的「未来 2 天风险」概述与单点位信息（同目录） ----------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 try:
     if _HERE not in sys.path:
         sys.path.insert(0, _HERE)
-    from gen_points_summary import build_short, gongqu, peaks_48h
+    from gen_points_summary import (point_focus, h48_snow, gongqu,
+                                    peaks_48h, overview_elems)
 except Exception:
-    build_short = None
+    point_focus = None
+    h48_snow = None
+    overview_elems = None
 
     def gongqu(name):
         run = []
@@ -100,44 +105,19 @@ SEV_COLOR = {0: "#2E8B57", 1: "#E0A92C", 2: "#E0822C", 3: "#C0392B"}
 
 # ===== 七要素预警标签：统一引用 jozzonwx（JW.RAIN_ALERT / JW.RAIN_ALERT_S / ...）=====
 # 文本严格按用户 2026-10-16 口径，已在共享模块集中定义，避免两端漂移。
-
-# 旧五要素分级函数已移除：统一走 jozzonwx.grade_*（见 alert_items / sev_of_recent）。
-
-def alert_items(rain_mmh, snow_mmh, gust, wind, appMax, appMin, visMin, verbose=True, min_lv=1):
-    """七要素独立判定，可同时多条；统一走 jozzonwx.grade_*。verbose=False 只给等级名、不带阈值数字。
-    min_lv：只保留等级 >= min_lv 的要素，默认 1 = 低等级要素（小雨、五级风等）照常写出，
-    因为它们是客观事实；用户澄清（2026-10-09）这些低等级**不写反而丢失信息**，
-    只是它们**不足以抬高风险等级**——抬级只看「中雨及以上」或「任一 3 级预警」。
-    舒适度由体感温度 UTCI 承担（plain 温度只展示、不单独预警），冷/热双向。"""
-    out = []
-    r = JW.grade_rain(rain_mmh or 0)
-    if r >= min_lv: out.append(JW.RAIN_ALERT[r] if verbose else "降雨·" + JW.RAIN_ALERT_S[r])
-    s = JW.grade_snow(snow_mmh or 0)
-    if s >= min_lv: out.append(JW.SNOW_ALERT[s] if verbose else "降雪·" + JW.SNOW_ALERT_S[s])
-    g = JW.grade_gust(gust or 0)
-    if g >= min_lv: out.append(JW.GUST_ALERT[g] if verbose else "阵风·" + JW.GUST_ALERT_S[g])
-    w = JW.grade_wind(wind or 0)
-    if w >= min_lv: out.append(JW.WIND_ALERT[w] if verbose else "均风·" + JW.WIND_ALERT_S[w])
-    ul = 0
-    if appMax is not None: ul = max(ul, JW.grade_utci(appMax)[0])
-    if appMin is not None: ul = max(ul, JW.grade_utci(appMin)[0])
-    if ul >= min_lv:
-        if appMax is not None and JW.grade_utci(appMax)[0] >= ul:
-            out.append(JW.UTCI_HOT[ul] if verbose else "体感·" + JW.UTCI_HOT_S[ul])
-        else:
-            out.append(JW.UTCI_COLD[ul] if verbose else "体感·" + JW.UTCI_COLD_S[ul])
-    v = JW.grade_vis(visMin) if visMin is not None else 0
-    if v >= min_lv: out.append(JW.VIS_ALERT[v] if verbose else JW.VIS_ALERT_S[v])
-    return out
+# 2026-10-17：本文件原先的 alert_items()（把七要素拼成「未来48h累计降水…；降雨·小雨…」长串）
+# 已删除——卡片与概述改走 gen_points_summary.point_focus / overview_elems，
+# 只报最高等级那一档、要素名自带阈值，不再逐条罗列低等级要素。
 
 # ---------- 风险等级（沿用 _sev 阈值） ----------
 def sev_of(daily, s):
     pmax = max((d["rainfall"] for d in daily), default=0)
     gust = s["maxGust"]; tmax = s["maxTemp"]; tmin = s["minTemp"]; wind = s["maxWind"]
     focus = sum(d["rainfall"] for d in daily if d["rainfall"] >= 10)
-    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or focus >= 150: return 3
-    if pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or focus >= 80: return 2
-    if pmax >= 12 or wind >= 10.8 or tmin <= 0 or focus >= 30: return 1
+    # 风阈值统一走 jozzonwx（2026-10-17：阵风 13.9/17.2/24.5/32.7，同级比均风高两级风力）
+    if pmax >= 80 or JW.grade_gust(gust) >= 4 or tmax >= 38 or focus >= 150: return 3
+    if pmax >= 50 or JW.grade_gust(gust) >= 3 or tmax >= 35 or tmin <= -5 or focus >= 80: return 2
+    if pmax >= 12 or JW.grade_wind(wind) >= 2 or tmin <= 0 or focus >= 30: return 1
     return 0
 
 
@@ -179,9 +159,9 @@ def sev_of_recent(daily3, ph=0.0, cum48=None, el48=None):
         tmax = max((d["tempMax"] for d in daily3), default=99)
         tmin = min((d["tempMin"] for d in daily3), default=99)
     cum = cum48 if cum48 is not None else sum(d["rainfall"] for d in daily3)
-    if pmax >= 80 or gust >= 20.8 or tmax >= 38 or cum >= 150: sev = 3
-    elif ph >= 10 or pmax >= 50 or gust >= 17.2 or tmax >= 35 or tmin <= -5 or cum >= 80: sev = 2
-    elif ph >= 5 or pmax >= 12 or wind >= 10.8 or tmin <= 0 or cum >= 20: sev = 1
+    if pmax >= 80 or JW.grade_gust(gust) >= 4 or tmax >= 38 or cum >= 150: sev = 3
+    elif ph >= 10 or pmax >= 50 or JW.grade_gust(gust) >= 3 or tmax >= 35 or tmin <= -5 or cum >= 80: sev = 2
+    elif ph >= 5 or pmax >= 12 or JW.grade_wind(wind) >= 2 or tmin <= 0 or cum >= 20: sev = 1
     else: sev = 0
     # 用户规则（2026-10-09）：有明显降雨（中雨及以上，>=1.5mm/h）即至少定为「需关注」；
     # 降雪、阵风、高/低温仍按各自等级判定，不因这条降雨规则被额外抬级。
@@ -241,16 +221,44 @@ ul.adv li:last-child{border-bottom:none;}
 """
 
 
+# ---------- 「未来 2 天（48 小时）风险」概述块（按「要素 × 级别」分行） ----------
+def near_term_html(rows, w0="", w1=""):
+    """一行一个「要素 · 等级」+ 达成该级别的点位名（与物探 index 同款，2026-10-17 用户口径）。
+    rows 由 gen_points_summary.overview_elems() 产出（已按级别降序、只含 2 级及以上）。
+    无 2 级及以上要素时给一句「天气平稳」，不罗列「无明显降水/无大风」这类否定式描述。"""
+    win = f"（{w0} ~ {w1}）" if w0 and w1 else ""
+    head = f'<div class="nt-h">未来 2 天（48 小时）风险{win}</div>'
+    if not rows:
+        return ('<div class="near">' + head +
+                '<div class="elrow"><span class="elp">各点位天气平稳，无明显强降雨与大风，'
+                '整体适宜作业</span></div></div>')
+    body = []
+    for r in rows:
+        col = "#C0392B" if r["lv"] >= 3 else "#E0822C"
+        names = "、".join(r["names"])
+        if r["more"]:
+            names += f" 等 {len(r['names']) + r['more']} 口井"
+        body.append('<div class="elrow">'
+                    f'<span class="elk" style="background:{col}">{r["name"]} · {r["head"]}</span>'
+                    f'<span class="elp">{names}</span></div>')
+    return '<div class="near">' + head + "".join(body) + '</div>'
+
+
 # ---------- 总览 index（按 level1+level2 分组，组内按风险等级降序） ----------
-def render_index(groups, counts, start_label, end_label=None, short2=None, ndays=0):
+def render_index(groups, counts, start_label, end_label=None, near_html=None, ndays=0):
     parts = []
     parts.append("""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>中石化北斗运营中心 · 石油工程天气看板</title><style>""" + CSS + """
 .grp {background:#fff; border-radius:12px; padding:0 13px; margin-bottom:12px; box-shadow:0 1px 4px rgba(0,0,0,.06); overflow:hidden;}
-.grp h2 {font-size:15px; padding:12px 0; cursor:pointer; display:flex; align-items:center; gap:8px; user-select:none; transition:background .15s;}
+.grp h2 {font-size:15px; padding:12px 0; cursor:pointer; display:flex; align-items:center; gap:8px; flex-wrap:wrap; row-gap:3px; user-select:none; transition:background .15s;}
 .grp h2:hover {background:#f5f7f9;}
-.grp h2 .arr {margin-left:auto; font-size:12px; color:#8a98a6; transition:transform .2s;}
+.grp h2 .gname {flex:1 1 auto; min-width:0;}
+/* 2026-10-17 用户口径：单位名在左，右侧按「高度警惕/重点关注/需关注/整体适宜」分等级给出数量 */
+.grp h2 .gmeta {margin-left:auto; display:inline-flex; align-items:center; gap:9px; font-size:11px; font-weight:800; color:#7b8a99; white-space:nowrap;}
+.grp h2 .gmeta .gc {display:inline-flex; align-items:center; gap:4px;}
+.grp h2 .gmeta .dot {width:8px; height:8px; box-shadow:none;}
+.grp h2 .arr {font-size:12px; font-weight:400; color:#8a98a6; transition:transform .2s; margin-left:2px;}
 .grp.open h2 .arr {transform:rotate(90deg);}
 .grp-body {display:none; padding-bottom:10px;}
 .grp.open .grp-body {display:block;}
@@ -261,6 +269,17 @@ def render_index(groups, counts, start_label, end_label=None, short2=None, ndays
 .item .badge {margin-left:auto; font-size:11px; font-weight:700; color:#fff; padding:3px 10px; border-radius:9px;}
 .extlink {display:inline-flex; align-items:center; gap:4px; font-size:13px; font-weight:700; color:#fff; background:#2E7DA8; padding:7px 14px; border-radius:20px; text-decoration:none; box-shadow:0 2px 6px rgba(46,125,168,.3);}
 .extlink:hover {background:#245f82; transform:translateY(-1px);}
+/* 「未来 2 天（48 小时）风险」概述：按「要素 × 级别」分行（2026-10-17 用户口径，与物探 index 同款）。
+   行头 = 要素 · 等级 色块（3 级及以上红 / 2 级橙），后面跟达成该级别的点位名；
+   行序 = 级别降序 → 同级按 降水→降雪→阵风→均风→体感→能见度。 */
+.near {background:#fff; border-radius:12px; padding:11px 13px; margin-bottom:12px;
+  box-shadow:0 1px 4px rgba(0,0,0,.06); border-left:4px solid #2E7DA8;}
+.near .nt-h {font-size:12.5px; font-weight:800; color:#2E7DA8; margin-bottom:7px; letter-spacing:.2px;}
+.near .elrow {display:flex; gap:8px; align-items:flex-start; padding:3.5px 0;}
+.near .elrow + .elrow {border-top:1px dashed #eef1f4;}
+.near .elk {flex:0 0 auto; display:inline-block; font-size:11px; font-weight:700; color:#fff;
+  border-radius:6px; padding:1.5px 7px; white-space:nowrap; letter-spacing:.2px;}
+.near .elp {flex:1 1 auto; min-width:0; font-size:12.5px; line-height:1.5; color:#33414f; overflow-wrap:anywhere;}
 """ + hero_css() + """</style></head><body>""")
     parts.append('<div class="heroarea">')
     parts.append('<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">'
@@ -278,16 +297,27 @@ def render_index(groups, counts, start_label, end_label=None, short2=None, ndays
     span += " · 组内按风险等级降序"
     parts.append(f'<div class="sub">{span}</div>')
     parts.append('</div>')          # 结束 .heroarea（页头背景区：标题 + 窗口说明）
-    summ = " · ".join(f'<span style="color:{SEV_COLOR[i]}">●</span> {SEV_LABEL[i]} {counts[i]}'
-                      for i in (3, 2, 1, 0))
-    parts.append(f'<div class="card" style="font-size:13px">{summ}</div>')
-    if short2:
-        parts.append(
-            f'<div class="card" style="font-size:13px;background:#fff8f0;border-left:4px solid #E0822C">'
-            f'<b>未来 2 天风险</b>：{short2}</div>')
-    for idx_g, ((l1, l2), gsev, items) in enumerate(groups):
+    # 等级分布：每档用 nowrap 的独立 span + flex 间距，避免「整体适宜」与数字被折到两行
+    summ = "".join(
+        f'<span style="white-space:nowrap"><span style="color:{SEV_COLOR[i]}">●</span> '
+        f'{SEV_LABEL[i]} {counts[i]}</span>'
+        for i in (3, 2, 1, 0))
+    parts.append(f'<div class="card" style="font-size:13px;display:flex;flex-wrap:wrap;gap:6px 14px">{summ}</div>')
+    if near_html:
+        parts.append(near_html)
+    for idx_g, ((l1, l2), _gsev, items) in enumerate(groups):
+        # 组标题 = 单位名（一级 · 二级）+ 右侧「各等级点位数」（高度警惕 → 整体适宜，只列非 0 的档）
+        cnts = {0: 0, 1: 0, 2: 0, 3: 0}
+        for r in items:
+            cnts[r["sev2"]] = cnts.get(r["sev2"], 0) + 1
+        chips = "".join(
+            f'<span class="gc"><span class="dot" style="background:{SEV_COLOR[lv]}"></span>{cnts[lv]}</span>'
+            for lv in (3, 2, 1, 0) if cnts[lv])
         parts.append('<div class="grp">')
-        parts.append(f'<h2 onclick="this.parentElement.classList.toggle(\'open\')"><span class="dot" style="background:{SEV_COLOR[gsev]}"></span>{l1} · {l2}<span class="arr">▸</span></h2>')
+        parts.append(
+            f'<h2 onclick="this.parentElement.classList.toggle(\'open\')">'
+            f'<span class="gname">{l1} · {l2}</span>'
+            f'<span class="gmeta">{chips}<span class="arr">▸</span></span></h2>')
         parts.append('<div class="grp-body">')
         for r in items:
             parts.append(
@@ -297,7 +327,7 @@ def render_index(groups, counts, start_label, end_label=None, short2=None, ndays
                 f'<span class="badge" style="background:{SEV_COLOR[r["sev2"]]}">{SEV_LABEL[r["sev2"]]}</span></a>'
                 f'<div style="font-size:11px;color:#7b8a99;padding:0 11px 9px;margin-top:-4px">{r["focus"]}</div>')
         parts.append('</div></div>')
-    parts.append('<div class="foot">数据来源 Open-Meteo · 山区小气候可能强于模式预报</div>')
+    parts.append('<div class="foot">数据来源 九章雷电网（jozzon-mcp）· 山区小气候可能强于模式预报</div>')
     parts.append('<script async src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>')
     parts.append('<div style="margin-top:16px;padding-top:8px;border-top:1px solid rgba(128,128,128,.18);font-size:11px;color:#9aa0a6;text-align:center;opacity:.6;letter-spacing:.3px">访问统计 · 本页阅读 <span id="busuanzi_container_page_pv"><span id="busuanzi_value_page_pv"></span> 次</span> · 全站访客 <span id="busuanzi_container_site_uv"><span id="busuanzi_value_site_uv"></span> 人</span></div>')
     parts.append('</body></html>')
@@ -311,7 +341,7 @@ def main():
                     help="逐点 JSON 数据目录（meta.kind=='point'）")
     ap.add_argument("--htmldir", default="engineering/html", help="index.html 输出目录")
     ap.add_argument("--outdir", default="", help="（可选）index.html 单独输出目录，默认=htmldir")
-    ap.add_argument("--no-short", action="store_true", help="不生成「未来 2 天风险」短描述块")
+    ap.add_argument("--no-short", action="store_true", help="不生成「未来 2 天（48 小时）风险」概述块")
     args = ap.parse_args()
 
     datadir = os.path.abspath(args.datadir)
@@ -325,6 +355,7 @@ def main():
     recs = []
     ndays = 0  # 实际预报跨度（按 daily 长度），用于动态显示「未来 两周 / 未来 N 天」
     summary_pts = []  # 供 build_short 生成「未来 2 天风险」短描述
+    win48 = None      # 48h 窗口起止日（MM-DD），概述标题用；取首份数据的 hourly 前 48 格
     for fp in files:
         d = json.load(open(fp, encoding="utf-8"))
         m = d.get("meta", {})
@@ -333,6 +364,14 @@ def main():
             continue
         daily, s = d["daily"], d["summary"]
         ndays = max(ndays, len(daily))
+        # 48h 窗口起止日（MM-DD）：hourly 起点是当日整点，48 格会横跨 3 个自然日
+        if win48 is None:
+            _ht = (d.get("hourly") or {}).get("time") or []
+            if _ht:
+                win48 = (_ht[0][5:10], _ht[min(47, len(_ht) - 1)][5:10])
+            elif daily:
+                win48 = (daily[0].get("date", "")[5:],
+                         daily[min(1, len(daily) - 1)].get("date", "")[5:])
         slug = os.path.splitext(os.path.basename(fp))[0]
         sev = sev_of(daily, s)
         daily2 = daily[:2]
@@ -343,8 +382,7 @@ def main():
         cum48 = h48_precip(d)
         # 48h 评级与 build_short/卡片焦点保持同一口径：纳入小时级短时降水 + 48h 窗口风温
         sev2 = sev_of_recent(daily2, pk48.get("pHourMax") or 0.0, cum48=cum48, el48=pk48)
-        # 五要素预警焦点文字（仅 48h 峰值 → 用户 2026-10-09 阈值）
-        # 各要素等级：用于下方「等级抬级」判定（小雨/五级风不抬级，中雨或任一3级才抬）
+        # 各要素等级：仅用于下方「等级抬级」兜底（中雨及以上或任一 3 级才抬级）
         a_r = JW.grade_rain(pk48.get("pHourMax") or 0)
         a_g = JW.grade_gust(pk48.get("gust") or 0)
         a_s = JW.grade_snow(pk48.get("snowHourMax") or 0)
@@ -354,21 +392,14 @@ def main():
         if pk48.get("appMin") is not None: a_u = max(a_u, JW.grade_utci(pk48["appMin"])[0])
         a_v = JW.grade_vis(pk48.get("visMin")) if pk48.get("visMin") is not None else 0
         a_max = max(a_r, a_s, a_g, a_w, a_u, a_v)
-        # 卡片照常写全各要素的客观事实——小雨、五级风等低等级要素也要写出来；
-        # 只是它们不足以抬高风险等级（等级抬级只看 中雨及以上 或任一 3 级预警）。
-        # 故此处 min_lv 保持默认 1，不做等级过滤。
-        _bits = []
-        # 显示门槛与单点位看板 alert_desc() 保持一致（cum >= 0.5mm 才写），
-        # 否则 index 有数字而项目页没有、或反之，视为口径不一致。
-        if cum48 >= 0.5:
-            _bits.append(f"未来 48 小时累计降水 {round(cum48,1)}mm")
-        _bits += alert_items(pk48.get("pHourMax"), pk48.get("snowHourMax"),
-                             pk48.get("gust"), pk48.get("wind"),
-                             pk48.get("appMax"), pk48.get("appMin"), pk48.get("visMin"),
-                             verbose=False)
-        focus = "；".join(_bits) or "未来 2 天天气平稳"
+        # 卡片信息（2026-10-17 用户口径）：只报最高等级那一档的要素（有 4 级就不提 3 级），
+        # 同级最多 2 个、要素名自带阈值；48h 累计降水 >20mm / 累计降雪 >10mm 才提，
+        # 低量级流水账（0.8mm 小雨等）一律不再罗列。
+        snow48 = h48_snow(d) if h48_snow else 0.0
+        focus = (point_focus({**pk48, "cum": cum48, "snow48": snow48})
+                 if point_focus else "")
         # 一致性兜底：明显降雨（中雨及以上）或任一 3 级预警 → 等级至少「需关注」，
-        # 避免出现「整体适宜」却挂着「疾风七级预警」的自相矛盾
+        # 避免出现「整体适宜」却挂着「狂风十级预警」的自相矛盾
         if (a_r >= 2 or a_max >= 3) and sev2 < 1:
             sev2 = 1
         recs.append({"name": m["name"], "level1": m["level1"], "level2": m["level2"],
@@ -380,6 +411,7 @@ def main():
         summary_pts.append({
             "name": m["name"], "gq": gongqu(m["name"]),
             "cum": round(cum2, 1), "pkp": round(pk2.get("rainfall", 0), 1), "pkdate": pk2.get("date"),
+            "snow48": round(snow48, 1),
             # 风/温也统一取 48h 逐小时窗口极值（与卡片焦点、评级、项目页同源）
             "gust": pk48.get("gust"),
             "tmax": pk48.get("tmax"),
@@ -412,14 +444,16 @@ def main():
     for r in recs:
         counts[r["sev2"]] += 1
 
-    # 「未来 2 天风险」短描述（约 50 字、不列等级）；build_short 不可用时回退为空
-    short2 = None
-    if not args.no_short and build_short:
-        short2 = build_short(summary_pts, 2)
+    # 「未来 2 天（48 小时）风险」概述：按「要素 × 级别」分行，只列 2 级及以上
+    # （2026-10-17 用户口径，与物探 index 同款；原散文式 build_overview 仍保留给 md 汇总用）
+    near_html = None
+    if not args.no_short:
+        rows = overview_elems(summary_pts) if overview_elems else []
+        near_html = near_term_html(rows, *(win48 or ("", "")))
 
     start_label = recs[0]["start"]
     end_label = recs[0].get("end", "")
-    idx = render_index(glist, counts, start_label, end_label, short2, ndays)
+    idx = render_index(glist, counts, start_label, end_label, near_html, ndays)
     out = os.path.join(outdir, "index.html")
     open(out, "w", encoding="utf-8").write(idx)
     print(f"  ✓ index.html（{len(recs)} 个点位，{len(glist)} 个分组）→ {out}")

@@ -414,7 +414,7 @@ P = {
 def _sev():
     if P["pMax"] >= 80 or P["gustMax"] >= 20.8 or P["tmax"] >= 38 or P["focusTotal"] >= 150:
         return 3
-    if P["pMax"] >= 50 or P["gustMax"] >= 17.2 or P["tmax"] >= 35 or P["tmin"] <= -5 or P["focusTotal"] >= 80:
+    if P["pMax"] >= 50 or P["gustMax"] >= 24.5 or P["tmax"] >= 35 or P["tmin"] <= -5 or P["focusTotal"] >= 80:
         return 2
     if P["pMax"] >= 25 or P["windMax"] >= 10.8 or P["tmin"] <= 0 or P["focusTotal"] >= 30:
         return 1
@@ -424,8 +424,8 @@ SEV_LABEL = {0: "整体适宜", 1: "需关注", 2: "重点关注", 3: "高度警
 
 # 风险点(按各点自身判定)
 def risk_of(pp):
-    # 风速单位 m/s：8级≈17.2, 6级≈10.8
-    if pp["gustMax"] >= 17.2 or pp["tmax"] >= 35 or pp["pMax"] >= 50:
+    # 风速单位 m/s：阵风按 2026-10-17 新口径 8级17.2 / 10级24.5（同级比均风高两级风力）
+    if pp["gustMax"] >= 24.5 or pp["tmax"] >= 35 or pp["pMax"] >= 50:
         return "danger"
     if pp["pMax"] >= 25 or pp["windMax"] >= 10.8 or pp["tmin"] <= 0:
         return "warn"
@@ -586,7 +586,7 @@ TEMPLATE = r"""<!DOCTYPE html>
     <svg id="mapOverlay" viewBox="0 0 680 1210" preserveAspectRatio="xMidYMid meet"></svg>
   </div>
   <div class="legend">
-    <span><i style="background:#C0392B;width:16px;height:11px;border-radius:3px"></i>高风险区（暴雨/8级风）</span>
+    <span><i style="background:#C0392B;width:16px;height:11px;border-radius:3px"></i>高风险区（暴雨/10级风）</span>
     <span><i style="background:#E0822C;width:16px;height:11px;border-radius:3px"></i>注意区（大雨/大风）</span>
     <span style="align-items:center">海拔 <span class="elevbar"></span> <span id="elevTxt"></span></span>
   </div>
@@ -825,7 +825,7 @@ document.getElementById("metaLine").textContent = ISPTS
   document.body.classList.add("sev"+SEV);
   const nRisk = DATA.points.filter(p=>p.risk!=="ok").length;
   const th=[];
-  if(P.gustMax>=17.2) th.push(`最大阵风 ${P.gustMax} m/s（≥8级）`);
+  if(P.gustMax>=24.5) th.push(`最大阵风 ${P.gustMax} m/s（≥10级）`);
   if(P.tmax>=35) th.push(`最高气温 ${P.tmax}°C（高温）`);
   if(P.tmin<=0) th.push(`最低气温 ${P.tmin}°C（结冰/霜冻）`);
   if(P.pMax>=50) th.push(`${P.pMaxDay.slice(5)} 单日降水 ${P.pMax}mm（暴雨）`);
@@ -847,7 +847,7 @@ const tmaxP = argmax("tmax"), tminP = argmin("tmin"), gustP = argmax("gustMax"),
 const stats=[
   [LBL+"最高温", P.tmax+"°C", (P.tmax>=35?"高温预警":"无高温预警")+" · "+locStr(tmaxP)],
   [LBL+"最低温", P.tmin+"°C", (P.tmin<=0?"注意霜冻/结冰":"无霜冻/结冰")+" · "+locStr(tminP)],
-  ["最大阵风", P.gustMax+"<small> m/s</small>", (P.gustMax>=17.2?"≥8级，需停工":(P.gustMax>=10.8?"≥6级，加固":"约5级，不影响"))+" · "+locStr(gustP)],
+  ["最大阵风", P.gustMax+"<small> m/s</small>", (P.gustMax>=24.5?"≥10级，需停工":(P.gustMax>=17.2?"≥8级，加固":"约5级，不影响"))+" · "+locStr(gustP)],
   ["最大日降水", (P.pMax||0)+"<small> mm</small>", (P.pMaxDay?(P.pMax>=50?"暴雨 "+P.pMaxDay.slice(5):(P.pMax>=25?"大雨 "+P.pMaxDay.slice(5):"中雨 "+P.pMaxDay.slice(5))):"—")+" · "+locStr(pmaxP)],
 ];
 document.getElementById("statsBox").innerHTML = stats.map(s=>
@@ -864,12 +864,12 @@ if(P.pMax>=25){ out+=card("warn","降水 / 泥泞",{cls:"warn",t:"注意"},
   `${LBL} ${P.focusStart.slice(5)} ~ ${P.focusEnd.slice(5)} 连续降雨，逐日最大累计 <b>${P.focusTotal}mm</b>，其中 ${P.pMaxDay.slice(5)} 达 <b>${P.pMax}mm（大雨）</b>。低洼与河谷炮点、山区便道易泥泞、车辆通行困难；坡面含水升高，<b>滑坡/泥石流风险上升</b>；钻井与地震排列设备需做好防雨防潮。建议：推迟涉水与陡坡段施工，雨停后待便道稍干再进场，电缆接头包覆防水。`); }
 else { out+=card("ok","降水 / 泥泞",{cls:"ok",t:"安全"},
   `预报期内${LBL}日降水均 ≤25mm，以零星小雨为主，对便道与设备影响有限，常规防雨即可。`); }
-if(P.gustMax>=17.2){ out+=card("danger","大风 / 阵风",{cls:"danger",t:"预警"},
-  `${LBL}阵风达 ${P.gustMax} m/s（≥8级），钻机塔架、重力仪/磁力仪天线与帐篷稳定性受严重影响，高处作业必须停工。`); }
+if(P.gustMax>=24.5){ out+=card("danger","大风 / 阵风",{cls:"danger",t:"预警"},
+  `${LBL}阵风达 ${P.gustMax} m/s（≥10级），钻机塔架、重力仪/磁力仪天线与帐篷稳定性受严重影响，高处作业必须停工。`); }
 else if(P.windMax>=10.8){ out+=card("warn","大风 / 阵风",{cls:"warn",t:"注意"},
   `${LBL}持续风速达 ${P.windMax} m/s（≥6级），钻机与高空设备需加固，谨慎安排吊装/高处作业。`); }
 else { out+=card("ok","大风 / 阵风",{cls:"ok",t:"安全"},
-  `${LBL}最大阵风 ${P.gustMax} m/s（约5级及以下），不影响钻机、天线及帐篷，常规作业即可。`); }
+  `${LBL}最大阵风 ${P.gustMax} m/s（7级及以下），不影响钻机、天线及帐篷，常规作业即可。`); }
 if(P.tmax>=35){ out+=card("danger","高温",{cls:"danger",t:"预警"},`${LBL}最高气温 ${P.tmax}°C，人员易中暑、设备过热电池衰减，避开正午高强度作业、配备降温与补水。`); }
 else if(P.tmin<=0){ out+=card("warn","低温 / 结冰",{cls:"warn",t:"注意"},`${LBL}最低气温 ${P.tmin}°C，高海拔段可能结冰，人员保暖、电池效能下降需备用电源。`); }
 else { out+=card("ok","气温",{cls:"ok",t:"适宜"},`${LBL}气温区间 ${P.tmin}~${P.tmax}°C，体感适宜；高海拔早晚偏凉，注意人员保暖与仪器低温启动。`); }
@@ -887,7 +887,7 @@ const ELEM_DEFS = {
   precip:{name:"降水", unit:"mm", type:"bar", keys:["precip"], colors:["#7FB3D5"],
           thr:[{v:50,color:"#C0392B",label:"暴雨50"},{v:25,color:"#E0822C",label:"大雨25"}]},
   wind:  {name:"风速/阵风", unit:"m/s", type:"line2", keys:["windMax","gustMax"], colors:["#1F7A6B","#8E44AD"], labels:["持续风","阵风"],
-          thr:[{v:10.8,color:"#E0822C",label:"6级10.8"},{v:17.2,color:"#C0392B",label:"8级17.2"}]},
+          thr:[{v:17.2,color:"#E0822C",label:"8级17.2"},{v:24.5,color:"#C0392B",label:"10级24.5"}]},
 };
 let SEL = -1;
 function selectedElems(){ return Array.from(document.querySelectorAll('.elem-row input:checked')).map(c=>c.value); }

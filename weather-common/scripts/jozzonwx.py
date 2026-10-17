@@ -21,8 +21,14 @@ jozzon-mcp 是 MCP 工具，按「目标区 ta_id」拉逐小时天气，不是 
   阵风 gust      = wind_gusts_10m（m/s）
   均风 wind      = wind_speed_10m（m/s，新增）
   温度 temp      = temperature_2m（℃，仅展示、不单独预警）
-  体感温度 utci  = apparent_temperature / UTCI（℃，冷/热双向预警）
-  能见度 vis     = visibility（m，新增）
+  体感温度 utci  = apparent_temperature -> 后端实际编码 o1_utci（℃，冷/热双向预警）
+  能见度 vis     = visibility -> 后端实际编码 x1_visibility（**km，本模块统一 ×1000 转 m**）
+
+⚠️ 能见度（2026-10-17 用户指出 + 实测）：get_weather_metrics 只列 o1_ 系列（51 个），
+   **不含能见度**；但 get_hourly_weather 支持未文档化的 `x1_visibility`，值域 0.68~16.0，
+   上限封顶 16.0 → 单位是 km。且只有**前 162 小时**有值，之后全是 null
+   （o1_ 系要素 336h 齐全），故 48h 图完整、两周图只能覆盖前 7 天。
+   故 x1_visibility 保留 None（不落 0），避免被当成「能见度 0 m」。
 
 移除旧的 precipitation 总降水口径（不再作为独立要素）。
 
@@ -30,7 +36,9 @@ jozzon-mcp 是 MCP 工具，按「目标区 ta_id」拉逐小时天气，不是 
 ---------------------------------------------------
   降雨 / 降雪：与旧阈值相同（沿用）。
   均风 / 能见度 / 体感温度(冷·热)：本次新增。
-  阵风：用户未给新值，保留原 GUST_ALERT（8.0/10.8/13.9/17.2）。
+  阵风（2026-10-17 用户定）：**同级比均风高两级风力**，即
+        「阵风八级 = 均风六级」，故阵风 1~4 级阈值 = 13.9 / 17.2 / 24.5 / 32.7 m/s
+        （疾风七级 / 大风八级 / 狂风十级 / 飓风十二级）。
   plain 温度：仅展示，不单独预警（舒适度预警改由 体感温度 UTCI 承担）。
 
 ⚠️ o1_ 具体编码与 get_hourly_weather 返回结构在 jozzon-mcp 后端恢复前无法核实，
@@ -187,7 +195,19 @@ METRIC_HINTS = {
     "wind_gusts_10m":       ["gust", "wind_gust", "gusts_10m"],
     "temperature_2m":       ["temperature_2m", "temp_2m", "temperature", "t2m"],
     "apparent_temperature": ["apparent", "utci", "feels_like", "feels"],
-    "visibility":           ["visibility", "vis"],
+    "visibility":           ["x1_visibility", "visibility", "vis"],
+}
+
+# 钉死编码（2026-10-17）：get_weather_metrics 只列 o1_ 系列，能见度不在其中，
+# 但 get_hourly_weather 实测支持未文档化的 x1_visibility（单位 km）。
+# 关键词猜测对 visibility 无效（o1_ 里没有该要素，会被静默丢弃），故在此钉死。
+FIXED_CODES = {
+    "visibility": "x1_visibility",
+}
+
+# 单位换算：后端 x1_visibility 为 km → 内部统一 m
+UNIT_SCALE = {
+    "visibility": 1000.0,
 }
 
 # 用户可把已确认的编码钉死在 resolved_codes.json（同目录），优先级高于关键词猜测
@@ -227,6 +247,9 @@ def resolve_codes(metrics=None, save=True):
     for el in ELEMENTS:
         if el in override:
             out[el] = override[el]
+            continue
+        if el in FIXED_CODES:                 # 2026-10-17：钉死编码优先（能见度走 x1_）
+            out[el] = FIXED_CODES[el]
             continue
         hints = METRIC_HINTS.get(el, [el])
         hit = None
@@ -353,7 +376,10 @@ def fetch_hourly(ta_id, codes=None, forecast_hours=336, past_hours=0,
         "wind_gusts_10m": _num(pick("wind_gusts_10m")),
         "temperature_2m": _num(pick("temperature_2m")),
         "apparent_temperature": _num(pick("apparent_temperature")),
-        "visibility": _num(pick("visibility")),
+        # 能见度：km → m；保留 None（x1_visibility 只有前 162h 有值，
+        # 落 0 会被误读成「能见度 0 m / 极差」，下游一律按 `is not None and >0` 取最小值）
+        "visibility": _num(pick("visibility"),
+                           keep_none=True, scale=UNIT_SCALE.get("visibility", 1.0)),
     }
     res["rainfall"] = [round(a + b, 2) for a, b in zip(res["rain"], res["showers"])]
     return res
@@ -368,17 +394,19 @@ def fetch_region(ta_ids, forecast_hours=336, past_hours=0, time_zone="Asia/Shang
         time.sleep(0.3)  # 轻量冷却，避免触发限流
     return res
 
-def _num(seq):
-    """把可能为 None/字符串的序列规整为 float 列表。"""
+def _num(seq, keep_none=False, scale=1.0):
+    """把可能为 None/字符串的序列规整为 float 列表。
+    keep_none=True 时保留缺失为 None（供能见度等「缺测 ≠ 0」的要素使用）；
+    scale 为单位换算系数（能见度 km→m 用 1000）。"""
     out = []
     for v in (seq or []):
         if v is None or v == "":
-            out.append(0.0)
+            out.append(None if keep_none else 0.0)
         else:
             try:
-                out.append(float(v))
+                out.append(round(float(v) * scale, 2))
             except Exception:
-                out.append(0.0)
+                out.append(None if keep_none else 0.0)
     return out
 
 # ===========================================================================
@@ -402,15 +430,16 @@ UTCI_HOT = {0: "UTCI正常", 1: "低风险偏热预警(>26)", 2: "中风险炎�
 # 能见度（m）
 VIS_ALERT = {0: "正常能见度", 1: "能见度小于1公里预警(<1000m)", 2: "能见度小于500米预警(<500m)",
              3: "能见度小于200米预警(<200m)", 4: "能见度小于100米预警(<100m)"}
-# 阵风（m/s，保留原级：用户未给新值）
-GUST_ALERT = {0: "阵风正常", 1: "劲风五级预警(8.0m/s)", 2: "强风六级预警(10.8m/s)",
-              3: "疾风七级预警(13.9m/s)", 4: "大风八级预警(17.2m/s)"}
+# 阵风（m/s）：同级比均风高两级风力 —— 阵风八级(17.2) = 均风六级(10.8)。
+# 2026-10-17 用户定：1~4 级 = 疾风七级 / 大风八级 / 狂风十级 / 飓风十二级。
+GUST_ALERT = {0: "阵风正常", 1: "疾风七级预警(13.9m/s)", 2: "大风八级预警(17.2m/s)",
+              3: "狂风十级预警(24.5m/s)", 4: "飓风十二级预警(32.7m/s)"}
 
 # 短标签（去掉阈值数字，供卡片/列表紧凑展示；与上面的完整标签同源）
 RAIN_ALERT_S  = {0: "降雨正常", 1: "小雨预警", 2: "中雨预警", 3: "大雨预警", 4: "暴雨预警", 5: "大暴雨预警"}
 SNOW_ALERT_S  = {0: "正常", 1: "小雪预警", 2: "中雪预警", 3: "大雪预警", 4: "暴雪预警"}
 WIND_ALERT_S  = {0: "均风正常", 1: "劲风五级预警", 2: "强风六级预警", 3: "大风八级预警", 4: "狂风十级预警"}
-GUST_ALERT_S  = {0: "阵风正常", 1: "劲风五级预警", 2: "强风六级预警", 3: "疾风七级预警", 4: "大风八级预警"}
+GUST_ALERT_S  = {0: "阵风正常", 1: "疾风七级预警", 2: "大风八级预警", 3: "狂风十级预警", 4: "飓风十二级预警"}
 UTCI_HOT_S   = {0: "温度正常", 1: "偏热预警", 2: "炎热预警", 3: "酷热预警", 4: "极热预警"}
 UTCI_COLD_S  = {0: "温度正常", 1: "寒冷预警", 2: "严寒预警", 3: "酷寒预警", 4: "极寒预警"}
 VIS_ALERT_S  = {0: "能见度正常", 1: "能见度偏低预警", 2: "能见度差预警", 3: "能见度劣预警", 4: "能见度极低预警"}
@@ -419,7 +448,8 @@ VIS_ALERT_S  = {0: "能见度正常", 1: "能见度偏低预警", 2: "能见度�
 _RAIN_TH = [(15, 5), (6, 4), (3, 3), (1.5, 2), (0.2, 1)]
 _SNOW_TH = [(2, 4), (1, 3), (0.5, 2), (0.1, 1)]
 _WIND_TH = [(24.5, 4), (17.2, 3), (10.8, 2), (8.0, 1)]
-_GUST_TH = [(17.2, 4), (13.9, 3), (10.8, 2), (8.0, 1)]
+# 阵风：同级比均风高两级风力（八级阵风 17.2 = 六级均风 10.8）→ 阈值整体上移两档
+_GUST_TH = [(32.7, 4), (24.5, 3), (17.2, 2), (13.9, 1)]
 _VIS_TH = [(100, 4), (200, 3), (500, 2), (1000, 1)]   # 值越小越严重
 
 def _lv(thresholds, v, reverse=False):
@@ -495,14 +525,15 @@ RAIN_H = {"heavy": 3.0, "storm": 6.0, "torrent": 15.0}
 # 4.x 48h 峰值 + 综合风险等级（两套 skill 统一复用，避免分级漂移）
 # ---------------------------------------------------------------------------
 # 各要素等级 → 综合风险等级（0整体适宜/1需关注/2重点关注/3高度警惕）。
-# 阵风保留原级：17.2m/s(大风八级)=lv4，对应重点关注(sev2)，不抬到高度警惕。
+# 阵风（2026-10-17）：阈值已上移两档，同级与均风等价（阵风八级 = 均风六级），
+# 故 gust 的映射与 wind 完全一致，不再压平。
 # 降雨 大暴雨(lv5)=高度警惕；其余要素 lv4=高度警惕、lv3=重点关注、lv2=需关注。
 # ===========================================================================
 _LV2SEV = {
     "rain":  {0: 0, 1: 0, 2: 1, 3: 1, 4: 2, 5: 3},
     "snow":  {0: 0, 1: 0, 2: 1, 3: 2, 4: 3},
     "wind":  {0: 0, 1: 0, 2: 1, 3: 2, 4: 3},
-    "gust":  {0: 0, 1: 0, 2: 1, 3: 1, 4: 2},
+    "gust":  {0: 0, 1: 0, 2: 1, 3: 2, 4: 3},
     "utci":  {0: 0, 1: 0, 2: 1, 3: 2, 4: 3},
     "vis":   {0: 0, 1: 0, 2: 1, 3: 2, 4: 3},
 }

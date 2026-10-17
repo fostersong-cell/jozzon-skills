@@ -40,16 +40,15 @@ if _COMMON_DIR not in sys.path:
 import jozzonwx as JW
 
 def load_ta_map(name):
-    """读取 wutan/wutan_ta_map.json 中本项目对应的作业点列表（按序号对应）。
+    """读取 wutan/kml/wutan_ta_map.json 中本项目对应的作业点列表（按序号对应）。
     返回 [{ta_id, lon, lat, label}, ...]；未配置 / 文件缺失返回 []。
-    搜索顺序：env WUTAN_TA_MAP → 当前目录 wutan/wutan_ta_map.json（兼容旧名 ta_map.json）。
+    搜索顺序：env WUTAN_TA_MAP → 当前目录 wutan/kml/wutan_ta_map.json。
     新结构：项目 → {"points":[{name,lon,lat,ta_id}...], "lines":[...], "polygons":[...]}；
     旧结构：项目 → [{ta_id,lon,lat,label}...]（仍兼容）。"""
     cand = []
     if os.environ.get("WUTAN_TA_MAP"):
         cand.append(os.environ["WUTAN_TA_MAP"])
-    cand.append(os.path.join(os.getcwd(), "wutan", "wutan_ta_map.json"))
-    cand.append(os.path.join(os.getcwd(), "wutan", "ta_map.json"))   # 兼容旧文件名
+    cand.append(os.path.join(os.getcwd(), "wutan", "kml", "wutan_ta_map.json"))   # ta_map 已移至 kml/
     for p in cand:
         if os.path.exists(p):
             try:
@@ -693,7 +692,9 @@ else:
             # 体感温度（UTCI，冷/热双向）与能见度（m，越低越差）逐日序列：供新增图表
             "appMin":  [round(min(aMinD[d]), 1) for d in dailyDates],
             "appMax":  [round(max(aMaxD[d]), 1) for d in dailyDates],
-            "visMin":  [round(vD[d]) if d in vD else 10000 for d in dailyDates],
+            # 能见度（m）：x1_visibility 只有前 162h 有值，无值的日必须留 None，
+            # 不能填 10000 哨兵（会在两周图上画出一条假的「10 公里」平线）
+            "visMin":  [round(vD[d]) if d in vD else None for d in dailyDates],
         }
     point_series = [point_daily(p) for p in range(len(locs))]
 
@@ -900,7 +901,7 @@ else:
         gn = min(ps["tempMin"][di] for ps in point_series)
         tags = []
         if gp >= 50:  tags.append(f"单日降水 {round(gp,1)}mm（暴雨）")
-        if gg >= 17.2: tags.append(f"阵风 {round(gg,1)} m/s（≥8级）")
+        if gg >= 24.5: tags.append(f"阵风 {round(gg,1)} m/s（≥10级）")
         if gx >= 35:  tags.append(f"最高气温 {round(gx,1)}℃（高温）")
         if gn <= -5:  tags.append(f"最低气温 {round(gn,1)}℃（严寒）")
         if tags: far_items.append({"date": day, "text": "、".join(tags)})
@@ -974,7 +975,8 @@ else:
                 "wind":   [round(v, 1) for v in per["wind_speed_10m"][i][:HOURS_48]],
                 "gust":   [round(v, 1) for v in per["wind_gusts_10m"][i][:HOURS_48]],
                 "apparent": [round(v, 1) for v in per["apparent_temperature"][i][:HOURS_48]],
-                "vis":    [round(v, 1) for v in per["visibility"][i][:HOURS_48]],
+                "vis":    [round(v, 1) if v is not None else None
+                           for v in per["visibility"][i][:HOURS_48]],
             }
         _ps = point_series[i]
         _p2 = _ps["precip"][:n2]
@@ -1008,6 +1010,8 @@ else:
             "pMax2": round(max(_p2), 1) if _p2 else 0.0,
             # 该作业点自身的 48h 窗口累计降水（区域包络 pSum48 取的就是它的 max）
             "pSum48": _pv["pSum48"][i] if i < len(_pv["pSum48"]) else 0.0,
+            # 该作业点自身的 48h 窗口累计降雪（mm，水当量）——2026-10-17 关键指标「累计降水」分降雨/降雪两行
+            "snowSum48": round(sum(per["snowfall"][i][:HOURS_48]), 1),
             # 该作业点自身的 48h 最大小时降水（mm/h），供 index/页面点名"哪个点雨最强"
             "pHour2": _pv["pHourMax"][i] if i < len(_pv["pHourMax"]) else 0.0,
             "hx": hx,
@@ -1199,6 +1203,8 @@ if _payload_pts:
         "gust":  _worst(lambda p: p.get("gustMax2")), # 48h 最大阵风的点
         "wind":  _worst(lambda p: p.get("windMax2")), # 48h 最大均风的点
         "snow":  _worst(lambda p: _pt48(p)[6]),   # 48h 最大小时降雪的点
+        "snow48":_worst(lambda p: (p.get("snowSum48") if p.get("snowSum48") is not None
+                                   else _hx(p, "snow", "snowfall", fn=sum))),  # 48h 累计降雪最多的点
         "hi":    _worst(lambda p: p.get("tmax2")),    # 48h 最高温的点
         "lo":    _worst(lambda p: p.get("tmin2"), "min"),  # 48h 最低温的点
         "appMax":_worst(lambda p: _pt48(p)[7]),   # 48h 最热体感的点
@@ -1209,6 +1215,99 @@ if _payload_pts:
     _wp["unique"] = (len(_locs) == 1)
     _wp["label"] = (_wp["sum48"]["loc"] if len(_locs) == 1 else None)
 payload.setdefault("peaksNear", {})["worstPts"] = _wp
+
+# ======================================================================
+# 近 48 小时「逐要素最高级别风险」清单（2026-10-17 用户定）
+#   供「重点提示」逐条列出：每要素取**最严重的那个作业点**，给出等级名 / 数值 / 点位。
+#   分级一律走 jozzonwx.grade_*（与横幅、index、逐点清单同一套阈值），前端不再自带阈值。
+#   放在模块级（不放进取数分支），离线 --data 重渲染同样能算出来。
+# ======================================================================
+_EL_ORDER = [("rain", "降雨", 1), ("snow", "降雪", 2), ("gust", "阵风", 3),
+             ("wind", "均风", 4), ("utci", "体感", 5), ("vis", "能见度", 6)]
+_EL_UNIT = {"rain": "mm/h", "snow": "mm/h", "gust": "m/s", "wind": "m/s",
+            "utci": "℃", "vis": "m"}
+_EL_LABELS = {"rain": JW.RAIN_ALERT, "snow": JW.SNOW_ALERT, "gust": JW.GUST_ALERT,
+              "wind": JW.WIND_ALERT, "vis": JW.VIS_ALERT}
+
+
+def _utci_worst(app_min, app_max):
+    """体感取「冷/热中更严重的一侧」，返回 (level, value, mode)。"""
+    best_lv, best_v, mode = 0, None, "max"
+    for v, m in ((app_max, "max"), (app_min, "min")):
+        if v is None:
+            continue
+        lv = JW.grade_utci(v)[0]
+        if lv == 0:
+            continue
+        if lv > best_lv:
+            best_lv, best_v, mode = lv, v, m
+        elif lv == best_lv and best_v is not None:
+            # 同级取更极端：热端取大、冷端取小
+            if (v < 0 and v < best_v) or (v >= 0 and v > best_v):
+                best_v, mode = v, m
+    return best_lv, best_v, mode
+
+
+if not _payload_pts:          # 没有作业点时给个空实现，避免下面取数时 NameError
+    def _pt48(p):
+        return (0, 0, 0, 0, 0, 0, 0, None, None, None)
+
+_near_rows = []
+for _p in (_payload_pts if _payload_pts else []):
+    _ps, _ph, _g, _w, _hi, _lo, _sn, _amx, _amn, _vm = _pt48(_p)
+    _ul, _uv, _um = _utci_worst(_amn, _amx)
+    _near_rows.append({
+        "idx": _p.get("idx"), "rain": _ph or 0, "snow": _sn or 0,
+        "gust": _g or 0, "wind": _w or 0,
+        "utci": (JW.grade_utci(_uv)[1] if _uv is not None else ""),
+        "vis": _vm,
+        "_pk": {"rain": _ph, "snow": _sn,
+                "gust": _g, "wind": _w,
+                "utci": (_ul, _uv, _um),
+                "vis": _vm},
+    })
+
+
+def _el_pick(kind):
+    """该要素最严重的作业点 → (level, value, row, label)。"""
+    best = None
+    for r in _near_rows:
+        if kind == "utci":
+            lv, v, mode = r["_pk"]["utci"]
+            lbl = JW.grade_utci(v)[1] if v is not None else ""
+        elif kind == "vis":
+            v = r["vis"]
+            lv = JW.grade_vis(v) if v is not None else 0
+            mode, lbl = "min", (_EL_LABELS["vis"].get(lv, "") if lv else "")
+        else:
+            v = r[kind]
+            lv = {"rain": JW.grade_rain, "snow": JW.grade_snow,
+                  "gust": JW.grade_gust, "wind": JW.grade_wind}[kind](v)
+            mode, lbl = "max", (_EL_LABELS[kind].get(lv, "") if lv else "")
+        if not lv or v is None:
+            continue
+        if best is None or lv > best[0]:
+            best = (lv, v, r, lbl)
+        elif lv == best[0]:
+            # 同级取更极端值（热端/雨雪风取大，冷端/能见度取小）
+            better = (v < best[1]) if mode == "min" else (v > best[1])
+            if better:
+                best = (lv, v, r, lbl)
+    return best
+
+
+_near_items = []
+for _kind, _name, _ord in _EL_ORDER:
+    _hit = _el_pick(_kind)
+    if not _hit:
+        continue
+    _lv, _v, _row, _lbl = _hit
+    _lbl = (_lbl or "").split("(")[0].split("（")[0].strip() or f"{_name}{_lv}级"
+    _near_items.append({"kind": _kind, "name": _name, "order": _ord, "lv": int(_lv),
+                        "label": _lbl, "val": round(float(_v), 1),
+                        "unit": _EL_UNIT[_kind], "idx": _row["idx"]})
+_near_items.sort(key=lambda x: (-x["lv"], x["order"]))
+payload.setdefault("peaksNear", {})["nearItems"] = _near_items
 
 DATA_JSON = json.dumps(payload, ensure_ascii=False)
 
@@ -1276,15 +1375,53 @@ TEMPLATE = r"""<!DOCTYPE html>
   .alert .t{font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px;}
   .alert .d{font-size:13px;margin-top:6px;opacity:.96;}
   .alert .big{font-size:24px;font-weight:800;margin-top:4px;}
-  .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}
-  .stat{background:#FBFAF7;border:1px solid var(--line);border-radius:10px;padding:10px 12px;}
-  .stat .k{font-size:12px;color:var(--sub);}
+  /* 2026-10-17：minmax(0,1fr) + min-width:0 —— 否则点名牌（nowrap）的 min-content 会把
+     两列网格撑破（窄屏 390px 时整页横向溢出，实测 scrollWidth 470） */
+  .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+  .stat{background:#FBFAF7;border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+    min-width:0;overflow:hidden;}
+  .stat .k{font-size:12px;color:var(--sub);display:flex;align-items:center;}
   .stat .v{font-size:22px;font-weight:700;margin-top:2px;}
   .stat .v small{font-size:12px;font-weight:500;color:var(--sub);}
+  /* 关键指标（2026-10-17 重排）：每格多行「要素 / 数值 / 点名牌」，点名牌右对齐且可省略 */
+  .stat .vs{margin-top:5px;display:flex;flex-direction:column;gap:4px;min-width:0;}
+  /* flex-wrap：点名牌放不下时**自动折到下一行**（右对齐），而不是把名字截断或把数字挤变形。
+     名字本身 nowrap（「XYH-SN-01-南端」不该从中间断开），整行放不下才换行。 */
+  .stat .vr{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 4px;font-variant-numeric:tabular-nums;min-width:0;}
+  .stat .vr em{font-style:normal;font-size:11.5px;font-weight:700;color:var(--sub);min-width:25px;flex:0 0 auto;}
+  .stat .vr b{font-size:17px;font-weight:800;line-height:1.15;flex:0 0 auto;}
+  .stat .vr i{font-style:normal;font-size:11px;color:var(--sub);flex:0 0 auto;}
+  .stat .vr .pp{margin-left:auto;flex:0 1 auto;min-width:0;max-width:100%;font-size:9.5px;font-weight:700;
+    color:#7a3b12;background:#FFF3D6;border-radius:6px;padding:1px 6px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .stat .vr .pp.na{color:#a6adb3;background:transparent;padding:1px 0;}
+  /* 重点提示逐要素清单（2026-10-17）：一条一行，末列点名牌右对齐 */
+  .alert.sevbox .ailist{margin-top:9px;display:flex;flex-direction:column;gap:5px;}
+  .alert.sevbox .ai{display:flex;align-items:baseline;gap:7px;background:rgba(255,255,255,.16);
+    border-radius:8px;padding:5px 9px;font-size:12.5px;line-height:1.4;}
+  .alert.sevbox .ai .eic{margin-right:1px;}  /* 逐要素图标：底色＝该要素等级（绿/橙/红） */
+  .alert.sevbox .ai-k{font-weight:800;flex:0 0 auto;}
+  .alert.sevbox .ai-lv{font-weight:900;font-size:11.5px;background:rgba(0,0,0,.22);
+    border-radius:999px;padding:1px 8px;flex:0 0 auto;}
+  .alert.sevbox .ai-lv.lv3{background:#C0392B;} .alert.sevbox .ai-lv.lv2{background:#E0822C;}
+  .alert.sevbox .ai-lv.lv1{background:#E0822C;}  /* lv1~2 同属「注意」橙，与影响卡一致 */
+  .alert.sevbox .ai-v{font-weight:900;font-variant-numeric:tabular-nums;flex:0 0 auto;}
+  .alert.sevbox .ai-v em{font-style:normal;font-size:10.5px;font-weight:700;opacity:.85;margin-left:2px;}
+  .alert.sevbox .ai-p{margin-left:auto;flex:0 1 auto;min-width:0;font-weight:800;font-size:11.5px;
+    background:rgba(0,0,0,.20);border-radius:6px;padding:1px 7px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .alert.sevbox .ai-note{margin-top:8px;font-size:12px;opacity:.95;line-height:1.5;}
+  /* 远期描述：另起一行、不同底色（2026-10-17 用户要求）——米黄底 + 深棕字，
+     与上方彩色（按等级变色的）48 小时内文明显区分 */
+  .alert.sevbox .far{margin-top:9px;background:#FFF7E6;border-radius:9px;padding:7px 11px;
+    font-size:12.5px;line-height:1.55;color:#6b4a18;border-left:3px solid #E0A92C;}
+  .alert.sevbox .far b{font-size:11.5px;color:#B36B00;margin-right:5px;}
   .chart-wrap{width:100%;overflow:hidden;}
   svg.chart{width:100%;height:auto;display:block;}
-  .mapbox{position:relative;width:100%;height:280px;background:#ECE7DF;border-radius:10px;overflow:hidden;
-    touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}  /* 地图显示高度固定约手机屏 1/3，不随内容上下拉长 */
+  /* 2026-10-17 用户要求：地图横向缩为原 5/6、纵向缩为原 3/4（100%→83.333%，280px→210px），
+     居中显示；横向缩小后单屏能同时看到地图与下方图表，纵向压低减少留白。 */
+  .mapbox{position:relative;width:83.333%;height:210px;margin:0 auto;background:#ECE7DF;border-radius:10px;overflow:hidden;
+    touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}  /* 高度固定，不随内容上下拉长 */
   .mapbox canvas,.mapbox svg{position:absolute;inset:0;width:100%;height:100%;}
   /* 手机上单指拖图 / 双指缩放不被页面滚动抢走 —— touch-action 必须写在 .mapbox 容器上：
      iOS Safari 对 SVG 元素自身的 touch-action 支持不可靠，写在 <svg> 上经常被忽略。 */
@@ -1332,6 +1469,33 @@ TEMPLATE = r"""<!DOCTYPE html>
   .ec-legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--ink);margin:2px 0 6px;font-weight:600;}
   .ec-legend .lg{display:inline-flex;align-items:center;gap:6px;}
   .ec-legend i{display:inline-block;width:12px;height:12px;border-radius:3px;}
+  /* 48 小时图图例（2026-10-17 移到图表下方并放大字号，不再干扰绘图区） */
+  #hourlyCharts .hleg{display:flex;flex-wrap:wrap;gap:6px 12px;margin:9px 2px 2px;
+    font-size:13px;font-weight:700;color:#33414f;line-height:1.6;}
+  #hourlyCharts .hleg .hl{display:inline-flex;align-items:center;gap:6px;}
+  #hourlyCharts .hleg i.ln{display:inline-block;width:22px;height:3px;border-radius:2px;flex:0 0 auto;}
+  #hourlyCharts .hleg i.ln.dash{height:0;border-top:3px dashed;border-radius:0;}
+  /* 图表说明行（2026-10-17 与石油工程同款口径文字） */
+  .ec-note{font-size:12px;color:#5a6672;line-height:1.75;margin:8px 0 6px;}
+  .ec-note b{font-weight:800;color:#1f2933;}
+  .ec-note .lg{display:inline-flex;align-items:center;gap:5px;margin-left:2px;}
+  .ec-note .lg i{display:inline-block;width:12px;height:12px;border-radius:3px;}
+  /* 48 小时读数条（工程 .hval 同款；2026-10-17 移到图表**上方**，故留底边距） */
+  #hourlyCharts .hval{background:#fff;border:1px solid #eef1f4;border-radius:10px;padding:9px 11px;
+    font-size:12.5px;color:#33414f;box-shadow:0 1px 4px rgba(0,0,0,.06);margin:0 0 9px;line-height:2.0;}
+  #hourlyCharts .hval .t{font-weight:900;font-size:14.5px;color:#C0392B;margin-right:9px;
+    font-variant-numeric:tabular-nums;letter-spacing:.2px;}
+  /* 点位名（2026-10-17：地图下方要素说明面板删除后，点位信息并入这条读数条） */
+  #hourlyCharts .hval .pn{font-weight:900;font-size:13.5px;color:#1f2933;background:#E8EDF2;
+    border-radius:6px;padding:1.5px 8px;margin-right:7px;display:inline-block;line-height:1.5;}
+  #hourlyCharts .hval b{font-weight:900;font-size:12.5px;display:inline-block;line-height:1.5;
+    padding:1.5px 8px;border-radius:6px;}
+  #hourlyCharts .hval b.tv{color:#8A4B00;background:#FBEAD3;}
+  #hourlyCharts .hval b.pv{color:#0D47A1;background:#D8E9FA;}
+  #hourlyCharts .hval b.wv{color:#0F5B4C;background:#D9EFE7;}
+  #hourlyCharts .hval b.gv{color:#8A2A0E;background:#FBE0D6;}
+  /* 图表 SVG 等比缩放（工程 preserveAspectRatio="xMinYMin meet" 同款，避免拉伸变形） */
+  #explorerCharts svg.chart, #hourlyCharts svg.chart{width:100%;display:block;}
   /* 三页签 */
   .tabs{display:flex;gap:6px;margin:2px 0 12px;}
   .tabbtn{flex:1;padding:11px 4px;border:1px solid var(--line);background:#fff;border-radius:10px;
@@ -1436,7 +1600,6 @@ TEMPLATE = r"""<!DOCTYPE html>
       </div>
       <div class="mapnote" id="mapnote2"></div>
     </div>
-    <div class="risk-reason" id="riskReason" style="display:none"></div>
     <div id="hourlyCharts"></div>
   </div>
 </div>
@@ -1593,7 +1756,7 @@ function renderMap(suffix){
   const lat0=(minlat+maxlat)/2;
   // ---- Web Mercator 投影 + Esri World Topo Map 瓦片底图（支持缩放 / 平移） ----
   const mb=document.getElementById("mapbox"+suffix);
-  let W=Math.round((mb?mb.clientWidth:0)||680), pad=30, Hh=280;   // W=容器实际宽度（避免位图变形），Hh 固定约手机屏 1/3
+  let W=Math.round((mb?mb.clientWidth:0)||680), pad=30, Hh=210;   // W=容器实际宽度（避免位图变形），Hh 固定＝CSS .mapbox 高度（210px，原 280 的 3/4）
   const lon2x=(lon,z)=>(lon+180)/360*256*Math.pow(2,z);
   const lat2y=(lat,z)=>{const r=lat*Math.PI/180; return (1-Math.log(Math.tan(Math.PI/4+r/2))/Math.PI)/2*256*Math.pow(2,z);};
   // 视图状态（缩放档位 + 中心点）：按 suffix 记忆，切 Tab / 重绘后保留
@@ -1811,7 +1974,7 @@ function setZoom(suffix, dir, ax, ay){
   const V=VIEW[suffix]||(VIEW[suffix]={sc:1,cx:null,cy:null});
   if(dir==="reset"){ V.sc=1; V.cx=null; V.cy=null; renderMap(suffix); updZL(suffix); return; }
   const mb=document.getElementById("mapbox"+suffix);
-  const W=(mb?mb.clientWidth:680)||680, Hh=280;
+  const W=(mb?mb.clientWidth:680)||680, Hh=210;
   if(ax===undefined||ax===null||ay===undefined||ay===null){ ax=W/2; ay=Hh/2; }
   // dir 可以是字符串("in"/"out"，按钮) 也可以是数字倍率(双指捏合：本次间距/上次间距)。
   // 以前只认字符串，导致捏合恒走 1/1.6＝「一张开就缩小」—— 方向是反的。
@@ -1925,15 +2088,15 @@ const tintOf=c=>TINT[c]||"#EEF2F5";
 function drawValBox(svg, x, rows, geo){
   if(!rows || !rows.length) return;
   const W=geo.W, pl=geo.pl, pr=geo.pr, pt=geo.pt;
-  const cw=t=>t.split("").reduce((a,ch)=>a+(ch.charCodeAt(0)>255?11.6:6.4),0);
-  const bw=Math.max(96, Math.min(Math.max(...rows.map(r=>cw(r.t)))+18, W-2*pl));
-  const lh=15, pady=6, bh=rows.length*lh+pady*2;
+  const cw=t=>t.split("").reduce((a,ch)=>a+(ch.charCodeAt(0)>255?13.6:7.5),0);
+  const bw=Math.max(96, Math.min(Math.max(...rows.map(r=>cw(r.t)))+22, W-2*pl));
+  const lh=17.5, pady=7, bh=rows.length*lh+pady*2;
   let bx=x+10; if(bx+bw>W-pr) bx=x-10-bw; if(bx<pl) bx=pl;
-  const by=pt+4;
-  svg.appendChild(el("rect",{x:bx,y:by,width:bw,height:bh,rx:6,fill:"rgba(255,255,255,.96)",stroke:"#C0392B",["stroke-width"]:1.2}));
-  rows.forEach((r,i)=>{ const ty=by+pady+11+i*lh;
-    svg.appendChild(el("rect",{x:bx+6,y:ty-11,width:cw(r.t)+10,height:14.5,rx:5,fill:tintOf(r.c)}));
-    const tx=el("text",{x:bx+11,y:ty,"font-size":11.5,fill:r.c,["font-weight"]:"900"});
+  const by=pt+2;
+  svg.appendChild(el("rect",{x:bx,y:by,width:bw,height:bh,rx:7,fill:"rgba(255,255,255,.96)",stroke:"#C0392B",["stroke-width"]:1.2}));
+  rows.forEach((r,i)=>{ const ty=by+pady+13+i*lh;
+    svg.appendChild(el("rect",{x:bx+6,y:ty-13,width:cw(r.t)+12,height:17.5,rx:5,fill:tintOf(r.c)}));
+    const tx=el("text",{x:bx+11,y:ty,"font-size":13.5,fill:r.c,["font-weight"]:"900"});
     tx.textContent=r.t; svg.appendChild(tx); });
 }
 // ============ 气象要素小图标（2026-09-28）：色块＝风险等级，图形＝要素 ============
@@ -1957,7 +2120,6 @@ function eic(kind, lvl, small){
 
 // ============ 时间轴：逐小时风险着色 + 作业点风险原因 ============
 const COLMAP = {ok:"#1F7A6B", warn:"#E0822C", danger:"#C0392B"};
-const RR = document.getElementById("riskReason");
 let CUR_HOUR = 0;
 function updateSelLabel(suffix){
   const lab=document.getElementById("selLabel"+suffix);
@@ -1981,22 +2143,24 @@ function updateSelLabel(suffix){
 const RAIN_H={heavy:3, storm:6, torrent:15};
 // 单要素风险等级（供读数行的小图标着色；阈值与 riskClassAtHour 完全一致，勿各写一套）
 const lvRain = v => v>=RAIN_H.storm ? "danger" : (v>=RAIN_H.heavy ? "warn" : "ok");
-const lvGust = v => v>=17.2 ? "danger" : (v>=10.8 ? "warn" : "ok");
-const lvWind = lvGust;
+// 阵风 2026-10-17 新口径：同级比均风高两级风力（阵风八级 17.2 = 均风六级 10.8）
+// → 阵风 danger 取 10 级 24.5（lv3）、warn 取 8 级 17.2（lv2）；均风仍 danger 17.2 / warn 10.8。
+const lvGust = v => v>=24.5 ? "danger" : (v>=17.2 ? "warn" : "ok");
+const lvWind = v => v>=17.2 ? "danger" : (v>=10.8 ? "warn" : "ok");
 const lvTemp = v => v>=35 ? "danger" : (v<=0 ? "warn" : "ok");
 // 某作业点在第 h 小时的风险等级（ok/warn/danger）
 // 降水走「小时级短时降水」口径：≥5mm/h（暴雨，含 ≥10 大暴雨）即高风险，≥2mm/h（大雨）即注意；
-// 风/气温沿用原阈值（阵风 17.2 / 10.8 m/s，高温 35℃、低温 0℃）。
+// 风/气温：阵风按新口径（danger ≥24.5 = 十级，warn ≥17.2 = 八级），高温 35℃、低温 0℃。
 function riskClassAtHour(pt, h){
   if(!pt.hx) return pt.risk;
   const g=pt.hx.gust[h]||0, p=pt.hx.precip[h]||0, t=pt.hx.temp[h]||0;
   const sn=pt.hx.snow? pt.hx.snow[h]||0 : 0;
   const ap=pt.hx.apparent? pt.hx.apparent[h]||0 : 0;
   const vs=pt.hx.vis? pt.hx.vis[h]||0 : 0;
-  // 七要素：降水(暴雨≥6/大雨≥3) / 阵风(17.2/10.8) / 气温(≥35/≤0) /
+  // 七要素：降水(暴雨≥6/大雨≥3) / 阵风(24.5/17.2) / 气温(≥35/≤0) /
   // 降雪(暴雪≥2/中雪≥0.5) / 体感(酷热≥38·酷寒≤-27 / 炎热≥32·严寒≤-13) / 能见度(<100m/<500m)
-  if(g>=17.2 || t>=35 || p>=RAIN_H.storm || sn>=2 || (vs>0&&vs<100) || ap>=38 || ap<=-27) return "danger";
-  if(g>=10.8 || t<=0 || p>=RAIN_H.heavy || sn>=0.5 || (vs>0&&vs<500) || ap>=32 || ap<=-13) return "warn";
+  if(g>=24.5 || t>=35 || p>=RAIN_H.storm || sn>=2 || (vs>0&&vs<100) || ap>=38 || ap<=-27) return "danger";
+  if(g>=17.2 || t<=0 || p>=RAIN_H.heavy || sn>=0.5 || (vs>0&&vs<500) || ap>=32 || ap<=-13) return "warn";
   return "ok";
 }
 // 按当前小时重绘所有作业点颜色
@@ -2016,9 +2180,10 @@ function riskFactorsAtHour(pt, h){
   if(!pt.hx) return null;
   const g=pt.hx.gust[h]||0, w=pt.hx.wind[h]||0, p=pt.hx.precip[h]||0, t=pt.hx.temp[h]||0;
   const f=[];
-  if(g>=10.8) f.push({name:"阵风", val:g.toFixed(1), unit:"m/s", level:g>=17.2?3:2,
-    advice:g>=17.2?"≥8级，钻机塔架/天线/帐篷须停工":"6~7级，设备与帐篷需加固"});
-  if(w>=10.8) f.push({name:"持续风", val:w.toFixed(1), unit:"m/s", level:2, advice:"≥6级，注意高空作业与帐篷"});
+  if(g>=17.2) f.push({name:"阵风", val:g.toFixed(1), unit:"m/s", level:g>=24.5?3:2,
+    advice:g>=24.5?"≥10级，钻机塔架/天线/帐篷须停工避风":"8~9级，设备与帐篷需加固、避开阵风时段"});
+  if(w>=10.8) f.push({name:"持续风", val:w.toFixed(1), unit:"m/s", level:w>=17.2?3:2,
+    advice:w>=17.2?"≥8级，井架/天线须加固，高处作业停工":"≥6级，注意高空作业与帐篷"});
   // 降水：小时级短时降水分级 —— >3 大雨 / >6 暴雨 / >15 大暴雨（暴雨及以上算高风险，2026-10-09 用户定）
   if(p>=RAIN_H.heavy){
     const nm = p>=RAIN_H.torrent ? "短时大暴雨" : (p>=RAIN_H.storm ? "短时暴雨" : "短时大雨");
@@ -2051,22 +2216,8 @@ function riskFactorsAtHour(pt, h){
   return f;
 }
 function updateReasonPanel(){
-  if(SEL<0 || !RR){ RR.style.display="none"; return; }
-  const pt=DATA.points[SEL], h=CUR_HOUR;
-  const tm=(DATA.hourly.time[h]||"").slice(5,16).replace("T"," ");
-  let html=`<div class="rr-h"><b>${ptTag(pt.idx)}</b></div>`;
-  if(pt.hx){
-    html+=`<div class="rr-cur">🕒 <b class="clk">${tm}</b></div>`;
-    // 每个要素前置小图标：图标底色＝该要素在当前小时的风险等级（选时后随图表实时变化）
-    const _p=pt.hx.precip[h], _t=pt.hx.temp[h], _g=pt.hx.gust[h], _w=pt.hx.wind[h];
-    html+=`<div class="rr-valrow">${eic("rain",lvRain(_p),true)}降水 <b class="pv">${_p.toFixed(1)} mm</b> ｜ `
-        + `${eic("temp",lvTemp(_t),true)}气温 <b class="tv">${_t.toFixed(1)} ℃</b> ｜ `
-        + `${eic("wind",lvGust(_g),true)}阵风 <b class="gv">${_g.toFixed(1)} m/s</b> ｜ `
-        + `${eic("wind",lvWind(_w),true)}均风 <b class="wv">${_w.toFixed(1)} m/s</b></div>`;
-  } else {
-    html+=`<div class="rr-cur">🕒 <b class="clk">${tm}</b></div>`;
-  }
-  RR.innerHTML=html; RR.style.display="block";
+  // 2026-10-17 用户要求：地图下方的「各要素值说明」面板删除，
+  // 点位信息合并到 48 小时图表最底部的读数条 #hval 里（见 updateHourlyReadout）。
 }
 // 时间轴已移除：改由点击 48 小时图表任意位置选时（见 selectHour）
 
@@ -2080,71 +2231,121 @@ document.getElementById("metaLine").textContent = DATA.meta.kind === "points"
     : `工区范围 约 ${DATA.meta.lonkm}×${DATA.meta.latkm}km · 网格 ${DATA.meta.gridKm}km · ${DATA.meta.npts} 个作业点 · ${DATA.meta.start} ~ ${DATA.meta.end} · 数据 ${DATA.meta.gen} 生成`);
 
 // ============ 重点关注（未来 48 小时为主口径；远期仅"重大极端天气"才追加提示） ============
+// 要素 kind → eic 图标种类（banner 逐要素清单用）；等级 → eic 风险色（lv0 绿 / lv1~2 橙「注意」/ lv3~4 红「预警」，与影响卡一致）
+const EIC_KIND = {rain:"rain", snow:"snow", gust:"wind", wind:"wind", utci:"temp", vis:"fog"};
+function lvEic(lv){ return (lv>=3) ? "danger" : (lv>=1 ? "warn" : "ok"); }
+// 2026-10-17 用户口径：正文改成**逐要素清单**——每个要素只列「最高级别风险」的那一条，
+// 给出「要素 / 等级名 / 数值 / 点位」；远期（第 3~14 天）描述另起一行、用不同底色区分。
 (function(){
   const SEV=(DATA.meta.sevNear!==undefined?DATA.meta.sevNear:DATA.meta.sev);
   const LBL2=DATA.meta.sevLabelNear||DATA.meta.sevLabel;
   document.body.classList.add("sev"+SEV);
-  const nRisk = DATA.points.filter(p=>p.risk!=="ok").length;
-  // 注意：不要用 const th —— 同作用域已存在旧变量名会触发 SyntaxError 导致整页白屏
-  // 物探一个项目有几十个作业点，下列数值都是**区域包络**（各作业点里最恶劣的那个），
-  // 物探一个项目有几十个作业点，下列数值都是**区域包络**（各作业点里最恶劣的），
-  // 因此每条都点名是哪个作业点，否则现场无从查起。
-  // 标题行已写「未来 48 小时」，正文不再重复（原先正文又写「近 48 小时」、每条还带
-  // 「未来 48 小时」，同一页出现三遍）；也不提「共多少个作业点」，只说最不利点是谁。
-  // 物探一个项目有几十个作业点，下列数值都是**区域包络**（各作业点里最恶劣的），
-  // 故点名是哪个作业点，现场才能查证。
-  // **只保留最核心的 2 项**（用户 2026-10-09：概述不要面面俱到）——按要素等级排序后取前二，
-  // 其余要素在下方关键指标里能逐项看到，不必都堆在概述里。
-  const wpt = k => PN.worstPts && PN.worstPts[k] ? ptTag(PN.worstPts[k].idx) : "";
-  const at = k => (wpt(k) ? `（${wpt(k)}）` : "");
-  const _cand = [];
-  if(PN.gustMax>=17.2)     _cand.push([4, `阵风 ${PN.gustMax}m/s（≥8级）${at("gust")}`]);
-  else if(PN.gustMax>=13.9)_cand.push([3, `阵风 ${PN.gustMax}m/s（七级）${at("gust")}`]);
-  else if(PN.gustMax>=10.8)_cand.push([2, `阵风 ${PN.gustMax}m/s（六级）${at("gust")}`]);
-  if(PN.tmax>=35)          _cand.push([3, `最高温 ${PN.tmax}°C${at("hi")}`]);
-  if(PN.tmin<=-5)          _cand.push([3, `最低温 ${PN.tmin}°C${at("lo")}`]);
-  if(PN.pSum48>=50)        _cand.push([4, `累计降水 ${PN.pSum48}mm${at("sum48")}`]);
-  else if(PN.pSum48>=25)   _cand.push([3, `累计降水 ${PN.pSum48}mm${at("sum48")}`]);
-  _cand.sort((a,b)=>b[0]-a[0]);
-  const th = _cand.slice(0,2).map(x=>x[1]);
-  let desc = th.length
-    ? (th.join("；") + "，建议据此调整作业安排。")
-    : "天气平稳，适宜作业。";
-  // 受影响作业点：只点最严重的 1 个（完整清单见地图与关键指标），避免概述过长
-  const rp = PN.riskPts || [];
-  if(rp.length) desc += ` ${rp[0].label} 最需注意（${rp[0].why}），另有 ${PN.riskPtCount} 个作业点受影响。`;
-  if(FARALERT.has) desc += ` 远期另有 ${FARALERT.text}。`;
+  // 逐要素最高级别风险（Python 侧用 jozzonwx.grade_* 算好，前端不再各写一套阈值）
+  const items = (PN.nearItems || []).filter(x => x && x.lv >= 1);
+  const fmtV = it => (it.kind === "vis" ? Math.round(it.val) : it.val);
+  const rows = items.map(it =>
+      `<div class="ai">${eic(EIC_KIND[it.kind], lvEic(it.lv), true)}`
+    + `<span class="ai-k">${it.name}</span>`
+    + `<span class="ai-lv lv${it.lv}">${it.label}</span>`
+    + `<span class="ai-v">${fmtV(it)}<em>${it.unit}</em></span>`
+    + `<span class="ai-p">${ptTag(it.idx) || ("#" + ((it.idx||0) + 1))}</span></div>`).join("");
+  // 远期（第 3~14 天）另起一行、不同底色
+  const far = FARALERT.has
+    ? `<div class="far"><b>远期（第 3~14 天）</b>另有 ${FARALERT.text}</div>` : "";
+  const empty = `<div class="ai"><span class="ai-k">天气平稳</span>`
+    + `<span class="ai-v">未来 48 小时各要素均未达预警阈值，适宜作业</span></div>`;
   const box=document.getElementById("alertBox");
   box.className="alert sevbox";
-  box.innerHTML=`<div class="t"><span class="sev-dot"></span>未来 48 小时 · ${LBL2}</div><div class="d">${desc}</div>`;
+  box.innerHTML=`<div class="t"><span class="sev-dot"></span>未来 48 小时 · ${LBL2}</div>`
+    + `<div class="ailist">${rows || empty}</div>${far}`;
 })();
 
-// ---- 关键指标（未来 48 小时；副标题标注极值所在作业点的大致位置） ----
-const argmax = key => DATA.points.reduce((b,p)=> (b===null || (p[key]??-Infinity) > (b[key]??-Infinity)) ? p : b, null);
-const argmin = key => DATA.points.reduce((b,p)=> (b===null || (p[key]??Infinity) < (b[key]??Infinity)) ? p : b, null);
-const locStr = p => p ? ((p.isCenter ? ((DATA.meta.kind==="points" ? "作业点中心" : (DATA.isLine ? "测线中点" : "工区中心"))) : ptTag(p.idx)) + " 作业点") : "";
-const tmaxP = argmax("tmax2"), tminP = argmin("tmin2"), gustP = argmax("gustMax2"), pmaxP = argmax("pMax2"), psumP = (PN.worstPts&&PN.worstPts.sum48) ? (DATA.points||[]).find(p=>p.idx===PN.worstPts.sum48.idx) : null;
-// 每格＝[要素图标, 风险等级(决定图标底色), 指标名, 数值, 说明]；图标底色一眼看出风险程度
-const PH0 = PN.pHourMax||0;   // 48h 最大小时降水（mm/h），关键指标与影响卡共用
-// 日累计 与 小时级短时降水 取重（与下方影响卡同一套阈值，避免两处口径不一致）
-const statRain = (PN.pMax>=50 || PH0>=RAIN_H.torrent) ? "danger"
-               : ((PN.pMax>=25 || PH0>=RAIN_H.storm) ? "warn" : "ok");
-const stats=[
-  // 新增「48 小时累计降水」格：与横幅「未来 48 小时累计降水」同源（hourly[:48] 累加取最大），
-  // 并点名是哪个作业点——物探动辄几十个作业点，不点名现场无从核查。
-  // 新增「累计降水」格：与横幅「累计降水」同源（hourly[:48] 累加取最大）。
-  // 区块标题已写「未来 48 小时」，格内不再重复时间窗，只说数值与最不利作业点。
-  ["rain", statRain, "累计降水", (PN.pSum48||0)+"<small> mm</small>",
-    (PN.pSum48>=0.5 ? "逐小时累计" : "未来两天无明显降水") + (psumP?" · "+locStr(psumP):"")],
-  ["temp", PN.tmax>=35?"danger":"ok", LBL+"最高温", PN.tmax+"°C", (PN.tmax>=35?"高温预警":"无高温预警")+" · "+locStr(tmaxP)],
-  ["temp", PN.tmin<=0?"warn":"ok", LBL+"最低温", PN.tmin+"°C", (PN.tmin<=0?"注意霜冻/结冰":"无霜冻/结冰")+" · "+locStr(tminP)],
-  ["wind", PN.gustMax>=17.2?"danger":(PN.gustMax>=10.8?"warn":"ok"), "最大阵风", PN.gustMax+"<small> m/s</small>",
-    (PN.gustMax>=17.2?"≥8级，需停工":(PN.gustMax>=10.8?"6~7级，加固":"约5级，不影响"))+" · "+locStr(gustP)],
-  ["rain", statRain, "最大日降水", (PN.pMax||0)+"<small> mm</small>",
-    (PN.pMaxDay?(PN.pMax>=50?"暴雨 "+PN.pMaxDay.slice(5):(PN.pMax>=25?"大雨 "+PN.pMaxDay.slice(5):"中雨 "+PN.pMaxDay.slice(5))):"—")+" · "+locStr(pmaxP)],
-];
-document.getElementById("statsBox").innerHTML = stats.map(s=>
-  `<div class="stat"><div class="k">${eic(s[0],s[1])}${s[2]}</div><div class="v">${s[3]}</div><div class="k">${s[4]}</div></div>`).join("");
+// ---- 关键指标（未来 48 小时；2 列 × 3 行，每格都点名极值所在作业点） ----
+// 2026-10-17 用户定版 + 修正：每个要素各自独立取极值所在作业点（可能同点也可能不同点），
+// 不得把配对要素锁在同一最值点。例如 气温找最热点、体感找最闷热点；均风找最大均风点、阵风找最大阵风点；
+// 降雨找最大降水点、降雪找最大降雪点。
+//   第一排  累计降水（降雨 / 降雪）   ｜ 最大降水（降雨 / 降雪）
+//   第二排  最高温度（含对应体感）     ｜ 最低温度（含对应最低体感）
+//   第三排  最大风速（阵风 / 均风）   ｜ 能见度
+// 极值点取 peaksNear.worstPts（Python 侧按 48h 逐小时窗口算好）；体感点由前端独立扫 hx.apparent 全局最值。
+const WP = PN.worstPts || {};
+const wpVal = k => (WP[k] && WP[k].val !== null && WP[k].val !== undefined) ? WP[k].val : null;
+const wpPt  = k => (WP[k] && WP[k].idx !== null && WP[k].idx !== undefined) ? ptTag(WP[k].idx) : "";
+// 要素等级（决定图标底色）：直接复用「逐要素最高级别风险」清单里的 level，避免两套阈值
+const lvOf  = k => { const it=(PN.nearItems||[]).find(x=>x.kind===k); return it ? it.lv : 0; };
+const lvCls = k => { const l=lvOf(k); return l>=3 ? "danger" : (l>=2 ? "warn" : "ok"); };
+const tempCls = v => (v>=35 ? "danger" : (v<=0 ? "warn" : "ok"));
+const visCls  = v => ((v===null||v===undefined) ? "ok" : (v<200 ? "danger" : (v<500 ? "warn" : "ok")));
+// 降水图标色：与「作业天气影响与建议」降水卡同口径（RAIN_H：>3mm/h 注意 / >15mm/h 预警），
+// 不再走 grade_rain 的 lv（避免 lv1 中雨被算成绿色，与影响卡橙色不一致）
+function rainCls(v){ if(v==null) return "ok"; return (v>=RAIN_H.torrent) ? "danger" : (v>=RAIN_H.heavy ? "warn" : "ok"); }
+// 气温图标色：体感温度（UTCI）纳入判据，与影响卡一致——高温(plain≥35 / 体感酷热≥38) 危险，
+// 体感偏热≥32 / 低温≤0 / 体感严寒≤-13 注意；分冷热两侧
+function tempHotCls(tmax, appMax){ const gA=(appMax!=null)?gradeUtci(appMax):0;
+  if((tmax!=null&&tmax>=35) || gA>=3) return "danger"; if(gA>=2) return "warn"; return "ok"; }
+function tempColdCls(tmin, appMin){ const gI=(appMin!=null)?gradeUtci(appMin):0;
+  if(gI>=3) return "danger"; if((tmin!=null&&tmin<=0) || gI>=2) return "warn"; return "ok"; }
+// 体感温度独立取极值所在作业点（2026-10-17 修正）：体感「最闷热 / 最冷体感」与气温最值点是
+// 两个独立的最值，必须各自取 hx.apparent 的全局最值点（可能同点也可能不同点），不得共用气温点。
+function appPtIdx(mode){ // mode 'max' | 'min' → 体感最值所在作业点索引
+  const pts=DATA.points||[]; let bi=-1, bv=(mode==="max"?-Infinity:Infinity);
+  for(let i=0;i<pts.length;i++){
+    const a=pts[i]&&pts[i].hx&&pts[i].hx.apparent;
+    if(!a||!a.length) continue;
+    for(const v of a){ if(v===null||v===undefined) continue;
+      if(mode==="max" ? v>bv : v<bv){ bv=v; bi=i; } }
+  }
+  return bi;
+}
+const appHiPt = (()=>{ const i=appPtIdx("max"); return i>=0 ? ptTag(i) : ""; })();  // 最闷热点
+const appLoPt = (()=>{ const i=appPtIdx("min"); return i>=0 ? ptTag(i) : ""; })();  // 最冷体感点
+const f1 = v => (v===null||v===undefined) ? "—" : (Math.round(v*10)/10);
+// 降雨/降雪累计为 0 时不点名牌（否则会出现「降雪 0.0mm · 某点」这种无意义的点名）
+const ptPos = (k, v) => (v > 0 ? wpPt(k) : "");
+// 单格：标题 + 若干行（要素 / 数值 / 点名牌）
+function statCell(icon, cls, title, rows){
+  const body = rows.map(r=>{
+    const num = (r.v===null||r.v===undefined) ? "—" : r.v;
+    const pt  = r.p ? `<span class="pp">${r.p}</span>` : `<span class="pp na">—</span>`;
+    return `<div class="vr">${r.k?`<em>${r.k}</em>`:""}<b>${num}</b>`
+         + `${r.u?`<i>${r.u}</i>`:""}${pt}</div>`;
+  }).join("");
+  return `<div class="stat"><div class="k">${eic(icon,cls)}${title}</div><div class="vs">${body}</div></div>`;
+}
+const statsHtml = [
+  // ① 累计降水：48h 逐小时累加（降雨 = rain+showers，降雪 = snowfall 水当量）
+  //    降雨取「累计降水最值点」(sum48)、降雪取「累计降雪最值点」(snow48) —— 各要素独立取极值所在作业点
+  statCell("rain", rainCls(PN.pHourMax), "累计降水", [
+    {k:"降雨", v:f1(wpVal("sum48")),  u:"mm", p:ptPos("sum48", wpVal("sum48"))},
+    {k:"降雪", v:f1(wpVal("snow48")), u:"mm", p:ptPos("snow48", wpVal("snow48"))},
+  ]),
+  // ② 最大降水：48h 内最强的那一个小时（mm/h，风险分级用的就是这个量）
+  //    降雨取「小时降水最值点」(hour)、降雪取「小时降雪最值点」(snow) —— 各要素独立取极值所在作业点
+  statCell("rain", rainCls(PN.pHourMax), "最大降水", [
+    {k:"降雨", v:f1(wpVal("hour")), u:"mm/h", p:ptPos("hour", wpVal("hour"))},
+    {k:"降雪", v:f1(wpVal("snow")), u:"mm/h", p:ptPos("snow", wpVal("snow"))},
+  ]),
+  // ③ 最高温度 + 体感：气温取最热点(hi)、体感取「最闷热点」(hx.apparent 全局最值点) —— 两个要素独立取极值
+  statCell("temp", tempHotCls(PN.tmax, PN.appMax), "最高温度", [
+    {k:"气温", v:f1(PN.tmax), u:"℃", p:wpPt("hi")},
+    {k:"体感", v:f1(PN.appMax), u:"℃", p:appHiPt},
+  ]),
+  // ④ 最低温度 + 体感：气温取最冷点(lo)、体感取「最冷体感点」(hx.apparent 全局最值点) —— 两个要素独立取极值
+  statCell("temp", tempColdCls(PN.tmin, PN.appMin), "最低温度", [
+    {k:"气温", v:f1(PN.tmin), u:"℃", p:wpPt("lo")},
+    {k:"体感", v:f1(PN.appMin), u:"℃", p:appLoPt},
+  ]),
+  // ⑤ 最大风速：阵风取阵风最值点(gust)、均风取均风最值点(wind) —— 两个要素独立取极值
+  statCell("wind", lvCls("gust"), "最大风速", [
+    {k:"阵风", v:f1(wpVal("gust")),  u:"m/s", p:wpPt("gust")},
+    {k:"均风", v:f1(wpVal("wind")), u:"m/s", p:wpPt("wind")},
+  ]),
+  // ⑥ 能见度（48h 最低值；x1_visibility 缺测则为 —）
+  statCell("fog", visCls(PN.visMin), "最低能见度", [
+    {k:"", v:(PN.visMin===null||PN.visMin===undefined) ? null : Math.round(PN.visMin), u:"m", p:wpPt("visMin")},
+  ]),
+].join("");
+document.getElementById("statsBox").innerHTML = statsHtml;
 
 // ---- 影响说明（未来 48 小时口径；地图点击联动展示逐小时/逐日明细） ----
 // 物探作业影响与建议（2026-09-04）：建议针对整个项目，不要再说"作业点"——
@@ -2157,6 +2358,17 @@ function card(level,title,badge,html,icon){
   const ic = icon ? eic(icon, level, true) : "";
   return `<div class="${cls}"><div class="h">${ic}${title} <span class="badge ${badge.cls}">${badge.t}</span></div><p>${html}</p></div>`;
 }
+// 体感温度 UTCI 双向分级（与 weather-common/jozzonwx.grade_utci 完全一致）：返回 level∈0..4，冷/热取较严重一侧
+function gradeUtci(v){
+  if(v==null) return 0;
+  let cold=0;
+  if(v<-40) cold=4; else if(v<-27) cold=3; else if(v<-13) cold=2; else if(v<0) cold=1;
+  let hot=0;
+  if(v>46) hot=4; else if(v>38) hot=3; else if(v>32) hot=2; else if(v>26) hot=1;
+  return Math.max(hot,cold);
+}
+const UTCI_HOT_L=["UTCI正常","低风险偏热预警(>26)","中风险炎热预警(>32)","高风险酷热预警(>38)","极高风险极热预警(>46)"];
+const UTCI_COLD_L=["UTCI正常","低风险寒冷预警(<0)","中风险严寒预警(<-13)","高风险酷寒预警(<-27)","极高风险极寒预警(<-40)"];
 const daySpan = pp => pp.focusStart ? `${pp.focusStart.slice(5)}~${pp.focusEnd.slice(5)} ` : "";
 let out="";
 // 降水判据=「小时级短时降水」（>3 大雨 / >6 暴雨 / >15 大暴雨）+ 日累计连续降雨，两者取重
@@ -2171,15 +2383,20 @@ else if(pH>=RAIN_H.heavy){ out+=card("warn","短时大雨 / 泥泞",{cls:"warn",
   `未来 48 小时日累计降雨量不大，但出现 <b>${pH} mm/h</b> 的短时大雨（${PN.pHourPoint||""}），短时积水与便道湿滑明显。低洼与河谷段注意排水、车辆降速；设备做好防雨防潮，电缆接头包覆防水。`, "rain"); }
 else { out+=card("ok","降水 / 泥泞",{cls:"ok",t:"安全"},
   `未来 48 小时无连续中雨以上降雨，最大小时降水 ${pH||0} mm/h，以间歇小雨为主，对便道与设备影响有限，常规防雨即可。`, "rain"); }
-if(PN.gustMax>=17.2){ out+=card("danger","大风 / 阵风",{cls:"danger",t:"预警"},
-  `阵风达 ${PN.gustMax} m/s（≥8级），钻机塔架、重力仪/磁力仪天线与帐篷稳定性受严重影响，高处作业必须停工。`, "wind"); }
-else if(PN.gustMax>=10.8 || PN.windMax>=10.8){ out+=card("warn","大风 / 阵风",{cls:"warn",t:"注意"},
-  `阵风达 ${PN.gustMax} m/s（6~7级），钻机与高空设备需加固，谨慎安排吊装/高处作业。`, "wind"); }
+if(PN.gustMax>=24.5){ out+=card("danger","大风 / 阵风",{cls:"danger",t:"预警"},
+  `阵风达 ${PN.gustMax} m/s（≥10级 狂风），钻机塔架、重力仪/磁力仪天线与帐篷稳定性受严重影响，高处作业必须停工。`, "wind"); }
+else if(PN.gustMax>=17.2){ out+=card("warn","大风 / 阵风",{cls:"warn",t:"注意"},
+  `阵风达 ${PN.gustMax} m/s（8~9级），钻机与高空设备需加固，谨慎安排吊装/高处作业。`, "wind"); }
+else if(PN.windMax>=10.8){ out+=card("warn","大风 / 阵风",{cls:"warn",t:"注意"},
+  `均风达 ${PN.windMax} m/s（≥6级），阵风 ${PN.gustMax} m/s，钻机与高空设备需加固，谨慎安排吊装/高处作业。`, "wind"); }
 else { out+=card("ok","大风 / 阵风",{cls:"ok",t:"安全"},
-  `最大阵风 ${PN.gustMax} m/s（约5级及以下），不影响钻机、天线及帐篷，常规作业即可。`, "wind"); }
-if(PN.tmax>=35){ out+=card("danger","高温",{cls:"danger",t:"预警"},`最高气温 ${PN.tmax}°C，人员易中暑、设备过热电池衰减，避开正午高强度作业、配备降温与补水。`, "heat"); }
-else if(PN.tmin<=0){ out+=card("warn","低温 / 结冰",{cls:"warn",t:"注意"},`最低气温 ${PN.tmin}°C，高海拔段可能结冰，人员保暖、电池效能下降需备用电源。`, "snow"); }
-else { out+=card("ok","气温",{cls:"ok",t:"适宜"},`气温区间 ${PN.tmin}~${PN.tmax}°C，体感适宜；高海拔早晚偏凉，注意人员保暖与仪器低温启动。`, "temp"); }
+  `最大阵风 ${PN.gustMax} m/s（7级及以下）、均风 ${PN.windMax} m/s，不影响钻机、天线及帐篷，常规作业即可。`, "wind"); }
+// 气温 / 体感（UTCI 冷热双向：体感温度纳入判据，与石油工程「作业天气影响与建议」一致）
+const aMax=PN.appMax, aMin=PN.appMin, _gA=aMax!=null?gradeUtci(aMax):0, _gI=aMin!=null?gradeUtci(aMin):0;
+if(aMax!=null && _gA>=3){ out+=card("danger","高温 / 体感酷热",{cls:"danger",t:"预警"},`体感最高温 <b>${aMax}°C</b>（${UTCI_HOT_L[_gA]}），野外作业人员易中暑、设备过热电池衰减，避开正午高强度露天作业、配备降温与补水。`, "heat"); }
+else if(aMin!=null && _gI>=2){ out+=card("warn","低温 / 体感严寒",{cls:"warn",t:"注意"},`体感最低温 <b>${aMin}°C</b>（${UTCI_COLD_L[_gI]}），高海拔段可能结冰，人员保暖、电池效能下降需备用电源、设备防冻。`, "snow"); }
+else if(aMax!=null && _gA>=2){ out+=card("warn","体感偏热",{cls:"warn",t:"注意"},`体感最高温 <b>${aMax}°C</b>，体感偏热，注意防暑与通风。`, "heat"); }
+else { const rng=(aMin!=null&&aMax!=null)?`体感 ${aMin}~${aMax}°C，`:""; out+=card("ok","气温 / 体感",{cls:"ok",t:"适宜"},`气温 ${PN.tmin}~${PN.tmax}°C，${rng}体感适宜；高海拔早晚偏凉，注意人员保暖与仪器低温启动。`, "temp"); }
 out+=card("ok","低能见度 / 行车",{cls:"ok",t:"提示"},
   `雨后山区多雾、便道湿滑，越野车与设备转运需降速、保持车距；进场前确认便道承载力。`, "fog");
 ib.innerHTML=out;
@@ -2194,23 +2411,17 @@ function ptLegendHtml(ic){
 }
 // 选中作业点的逐要素曲线 / 柱状图 ============
 const EXPLORER = document.getElementById("explorerCharts");
+// 2026-10-17：图表标题 / 系列名 / 图例文案 / 配色 / 几何参数全部与石油工程对齐，
+// 阈值线整套去掉（工程两周图不画阈值线，只保留点选数值）。
 const ELEM_DEFS = {
-  temp:  {name:"气温", unit:"°C", icon:"temp", type:"line2", keys:["tempMax","tempMin"], colors:["#E0822C","#2E7DA8"], labels:["每日最高温","每日最低温"],
-          thr:[{v:35,color:"#C0392B",label:"高温35°"},{v:0,color:"#2E7DA8",label:"0°"}]},
-  precip:{name:"降水", unit:"mm", icon:"rain", type:"bar", keys:["liquid"], colors:["#2E86DE"], labels:["每日降雨"],
-          thr:[{v:50,color:"#C0392B",label:"暴雨50"},{v:25,color:"#E0822C",label:"大雨25"}]},
-  snow:  {name:"降雪", unit:"mm", icon:"snow", type:"bar", keys:["snow"], colors:["#3AA7C2"],
-          thr:[{v:2,color:"#C0392B",label:"暴雪2"},{v:1,color:"#E0822C",label:"大雪1"},{v:0.5,color:"#2E7DA8",label:"中雪0.5"}]},
-  wind:  {name:"阵风/均风", unit:"m/s", icon:"wind", type:"line2", keys:["gustMax","windMax"], colors:["#8E44AD","#1F7A6B"], labels:["每日最大阵风","每日最大均风"],
-          thr:[{v:10.8,color:"#E0822C",label:"6级10.8"},{v:17.2,color:"#C0392B",label:"8级17.2"}]},
-  apparent:{name:"体感温度", unit:"°C", icon:"temp", type:"line2", keys:["appMax","appMin"], colors:["#C0392B","#2E7DA8"], labels:["每日最高体感","每日最低体感"],
-          thr:[{v:38,color:"#C0392B",label:"酷热38"},{v:32,color:"#E0822C",label:"炎热32"},{v:0,color:"#2E7DA8",label:"0°"},{v:-13,color:"#2E7DA8",label:"严寒-13"},{v:-27,color:"#1F4E9C",label:"酷寒-27"},{v:-40,color:"#12347A",label:"极寒-40"}]},
-  vis:   {name:"能见度", unit:"m", icon:"fog", type:"line", keys:["visMin"], colors:["#7A5C9E"], labels:["每日最低能见度"],
-          thr:[{v:100,color:"#C0392B",label:"<100m"},{v:200,color:"#E0822C",label:"<200m"},{v:500,color:"#E0822C",label:"<500m"},{v:1000,color:"#2E7DA8",label:"<1000m"}]},
+  temp:  {name:"逐日气温", unit:"°C", icon:"temp", type:"line2", keys:["tempMax","tempMin"], colors:["#E0822C","#2E7DA8"], labels:["最高温","最低温"]},
+  precip:{name:"逐日降水", unit:"mm", icon:"rain", type:"bar", keys:["liquid"], colors:["#2E86DE"], labels:["降雨"]},
+  snow:  {name:"逐日降雪", unit:"mm", icon:"snow", type:"bar", keys:["snow"], colors:["#5DD6E8"], labels:["降雪"]},
+  wind:  {name:"逐日阵风 / 均风", unit:"m/s", icon:"wind", type:"line2", keys:["gustMax","windMax"], colors:["#C0392B","#7E57C2"], labels:["阵风（日最大）","均风（日最大）"]},
+  apparent:{name:"逐日体感温度", unit:"°C", icon:"temp", type:"line2", keys:["appMax","appMin"], colors:["#D84315","#7E57C2"], labels:["最高体感","最低体感"]},
+  vis:   {name:"逐日能见度", unit:"m", icon:"fog", type:"line", keys:["visMin"], colors:["#7E57C2"], labels:["当日最低能见度"]},
 };
-// 「未来两周」固定展示四图（2026-10-16 用户定，对齐石油工程展示方式）：
-//   降水（含降雪）→ 气温（含体感）→ 阵风·均风 → 能见度
-// 原先靠「要素勾选框」自选，现改为固定四图：降雪并入降水图（并列柱）、体感并入气温图（虚线）。
+// 「未来两周」固定四图（与石油工程一致）：降水（含降雪并列柱）→ 气温（含体感虚线）→ 阵风·均风 → 能见度
 const EXP_CHARTS = ["precip","temp","wind","vis"];
 // ============ 图表「自由滑动选值」绑定器（与石油工程 48 小时图一致的 pointer 拖动） ============
 // pointerdown 即选中最近一格；按住左右拖动连续跟随（pointermove + 按键态）；轻点同一格再点一次＝取消。
@@ -2247,85 +2458,103 @@ function bindDragPick(svg, idxFn, apply, opt){
   svg.addEventListener("pointerup", up);
   svg.addEventListener("pointercancel",()=>{ down=false; });
 }
+// ============================================================================
+// 两周折线图（2026-10-17 与石油工程 render_points_html.svg_lines 完全对齐）
+//   viewBox 680×160 / 边距 42·12·14·30 / 4 条网格 / 刻度 12px #999
+//   折线 stroke-width 2 / 每点 r=2.6 / 数值 10px（按点位于上半或下半自动 -7 / +12）
+//   横轴日期 11px #888，逐日全标（与工程一致）
+//   data 里的 null 视为缺测：断开折线、不画点、不标值（能见度后 7 天即此情况）
+// ============================================================================
 function pointLine(svg, labels, series, opt){
-  const W=680,Hh=252,pl=44,pr=14,pt=22,pb=30; svg.setAttribute("viewBox",`0 0 ${W} ${Hh}`); svg.innerHTML="";
+  opt=opt||{};
+  const W=680,Hh=160,pl=42,pr=12,pt=14,pb=30;
+  svg.setAttribute("viewBox",`0 0 ${W} ${Hh}`); svg.innerHTML="";
   const n=labels.length;
   let lo=Infinity,hi=-Infinity;
-  series.forEach(s=>s.data.forEach(v=>{ if(v<lo)lo=v; if(v>hi)hi=v; }));
-  if(!isFinite(lo)){lo=0;hi=1;}
-  const pad=(hi-lo)*0.18||1; lo-=pad; hi+=pad;
-  const X=i=> pl+(W-pl-pr)*(n<=1?0.5:i/(n-1));
+  series.forEach(s=>(s.data||[]).forEach(v=>{ if(v===null||v===undefined)return; if(v<lo)lo=v; if(v>hi)hi=v; }));
+  if(!isFinite(lo)){ lo=0; hi=1; }
+  if(lo===hi){ lo-=1; hi+=1; }
+  const pad=(hi-lo)*0.15; lo-=pad; hi+=pad;          // 与工程 _scale 同口径
+  const X=i=> pl+(W-pl-pr)*i/Math.max(n-1,1);
   const Y=v=> pt+(Hh-pt-pb)*(1-(v-lo)/(hi-lo));
-  const fmt=v=>(Math.round(v*10)/10).toString();
-  [lo,(lo+hi)/2,hi].forEach(tv=>{ svg.appendChild(el("line",{x1:pl,y1:Y(tv),x2:W-pr,y2:Y(tv),stroke:"#EEE",["stroke-width"]:1}));
-    const tx=el("text",{x:pl-6,y:Y(tv)+4,["text-anchor"]:"end","font-size":13,fill:"#7a8086"}); tx.textContent=Math.round(tv); svg.appendChild(tx); });
-  (opt.thresholds||[]).forEach(th=>{ if(th.v<lo||th.v>hi)return;
-    svg.appendChild(el("line",{x1:pl,y1:Y(th.v),x2:W-pr,y2:Y(th.v),stroke:th.color,["stroke-width"]:1.4,["stroke-dasharray"]:"5 4",opacity:.85}));
-    const tx=el("text",{x:W-pr,y:Y(th.v)-5,["text-anchor"]:"end","font-size":12,fill:th.color,["font-weight"]:"700"}); tx.textContent=th.label; svg.appendChild(tx); });
-  const tk = opt.tickEvery||1;
-  for(let i=0;i<n;i+=tk){ if(!labels[i]) continue; const tx=el("text",{x:X(i),y:Hh-10,["text-anchor"]:"middle","font-size":13,fill:"#6B7378"}); tx.textContent=labels[i]; svg.appendChild(tx); }
-  series.forEach((s,si)=>{ let pts=""; s.data.forEach((v,i)=>{ const x=X(i),y=Y(v); pts+=(i?"L":"M")+x.toFixed(1)+" "+y.toFixed(1)+" "; });
-    svg.appendChild(el("path",{"class":"geo",d:pts,fill:"none",stroke:s.color,["stroke-width"]:2.4,["stroke-linejoin"]:"round",["stroke-linecap"]:"round"}));
-    const mi=s.data.indexOf(Math.max(...s.data)); svg.appendChild(el("circle",{"class":"geo",cx:X(mi),cy:Y(s.data[mi]),r:3.4,fill:s.color,stroke:"#fff",["stroke-width"]:1.5}));
-    // 每个每日点直接标注数值（未来两周 14 天同样标注，不再关闭）：系列已按「大值在上、小值在下」排序
-    // （气温=最高温/最低温，风=阵风/均风），故第一条线（最高温/阵风）标在上方（y-6）、
-    // 第二条线（最低温/均风）标在下方（y+14），两条线在同一 x 处上下错开、互不遮挡；
-    // 仅在 opt.noPointLabels（如有）为真时跳过
-    if(!opt.noPointLabels && !s.nolabel){ s.data.forEach((v,i)=>{ const x=X(i),y=Y(v);
-      const ty=(si===0)? y-8 : y+16;      // 上排（大值）标在上方、下排（小值）标在下方，与峰值圆点/折线留出间隙
-      const tx=el("text",{x:x,y:ty,["text-anchor"]:"middle","font-size":12,fill:s.color,["font-weight"]:"700"});
-      tx.textContent=fmt(v); svg.appendChild(tx); }); }
+  const midY=pt+(Hh-pt-pb)/2;
+  for(let g=0; g<4; g++){                             // 工程 4 条网格（0,1/3,2/3,1）
+    const tv=lo+(hi-lo)*g/3, yv=Y(tv);
+    svg.appendChild(el("line",{x1:pl,y1:yv.toFixed(1),x2:W-pr,y2:yv.toFixed(1),stroke:"#ececec"}));
+    const tx=el("text",{x:pl-5,y:(yv+3).toFixed(1),["text-anchor"]:"end","font-size":12,fill:"#999"});
+    tx.textContent=Math.round(tv); svg.appendChild(tx);
+  }
+  series.forEach(s=>{
+    let d="", pen=false;
+    (s.data||[]).forEach((v,i)=>{ if(v===null||v===undefined) return;
+      d+=((pen?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1)+" "); pen=true; });
+    if(!d) return;
+    const a={"class":"geo",d:d.trim(),fill:"none",stroke:s.color,["stroke-width"]:2,
+             ["stroke-linejoin"]:"round",["stroke-linecap"]:"round"};
+    if(s.dash) a["stroke-dasharray"]=s.dash;
+    svg.appendChild(el("path",a));
+    (s.data||[]).forEach((v,i)=>{ if(v===null||v===undefined) return;
+      svg.appendChild(el("circle",{"class":"geo",cx:X(i).toFixed(1),cy:Y(v).toFixed(1),r:2.6,fill:s.color}));
+      if(s.nolabel) return;
+      const ty=Y(v)<midY? -7 : 12;                    // 上半标上方、下半标下方（避免压线）
+      const tx=el("text",{x:X(i).toFixed(1),y:(Y(v)+ty).toFixed(1),["text-anchor"]:"middle",
+                          "font-size":10,fill:s.color,["font-weight"]:"700"});
+      tx.textContent=v.toFixed(1); svg.appendChild(tx);
+    });
   });
-  // 选日期（与 48 小时图一致）：点击即选、按住左右拖动可连续换日（自由滑动）
+  for(let i=0;i<n;i++){ if(!labels[i]) continue;
+    const tx=el("text",{x:X(i).toFixed(1),y:Hh-9,["text-anchor"]:"middle","font-size":11,fill:"#888"});
+    tx.textContent=labels[i]; svg.appendChild(tx); }
   if(opt.pick) bindDragPick(svg, (x,w)=>(x/w*W-pl)/(W-pl-pr)*(n-1), opt.pick.apply,
       {n:n, toggle:opt.pick.toggle, getSel:opt.pick.getSel, cancel:opt.pick.cancel});
   if(opt.pick) svg._pickCtx={n:n, X:X, pt:pt, pb:pb, Hh:Hh, W:W, pl:pl, pr:pr, getRows:opt.getRows};
 }
+// ============================================================================
+// 两周柱状图（与石油工程 svg_bars 完全对齐）
+//   基线恒 0 / vmax = max*1.15 / 4 网格 / 柱宽 slot*0.55（单）·0.30（并列）
+//   rx=2 / 柱顶数值 11px #444（≥10 取整、否则 1 位小数、无降水单系列标 <0.1）
+// ============================================================================
 function pointBar(svg, labels, vals, opt){
-  const W=680,Hh=252,pl=44,pr=14,pt=22,pb=30; svg.setAttribute("viewBox",`0 0 ${W} ${Hh}`); svg.innerHTML="";
-  const n=labels.length, yMax=opt.yMax;
-  const fmt=v=>(Math.round(v*10)/10).toString();
-  const X=i=> pl+(W-pl-pr)*(n<=1?0.5:i/(n-1));      // 与折线图完全一致的横坐标
-  const Y=v=> pt+(Hh-pt-pb)*(1-v/yMax);
-  [0,yMax/2,yMax].forEach(tv=>{ svg.appendChild(el("line",{x1:pl,y1:Y(tv),x2:W-pr,y2:Y(tv),stroke:"#EEE",["stroke-width"]:1}));
-    const tx=el("text",{x:pl-6,y:Y(tv)+4,["text-anchor"]:"end","font-size":13,fill:"#7a8086"}); tx.textContent=Math.round(tv); svg.appendChild(tx); });
-  (opt.thresholds||[]).forEach(th=>{ if(th.v>yMax)return;
-    svg.appendChild(el("line",{x1:pl,y1:Y(th.v),x2:W-pr,y2:Y(th.v),stroke:th.color,["stroke-width"]:1.4,["stroke-dasharray"]:"5 4",opacity:.85}));
-    const tx=el("text",{x:W-pr,y:Y(th.v)-5,["text-anchor"]:"end","font-size":12,fill:th.color,["font-weight"]:"700"}); tx.textContent=th.label; svg.appendChild(tx); });
-  // 柱：单系列时按降水类型着色；给出 opt.extra（[{name,vals,color}]）时改为「同一天内并列分组柱」
-  // —— 用于把降雪并入降水图（降雨蓝 + 降雪青）。
+  opt=opt||{};
+  const W=680,Hh=160,pl=42,pr=12,pt=14,pb=30;
+  svg.setAttribute("viewBox",`0 0 ${W} ${Hh}`); svg.innerHTML="";
+  const n=labels.length;
   const extras=(opt.extra||[]);
   const groups=1+extras.length;
+  const seriesList=[{name:opt.label||"降雨", vals:vals, color:opt.color||"#2E86DE"}].concat(extras);
+  const allv=[];
+  seriesList.forEach(s=>(s.vals||[]).forEach(v=>{ if(typeof v==="number") allv.push(v); }));
+  const yMax=(opt.yMax && opt.yMax>0) ? opt.yMax : Math.max(...allv,1)*1.15;
+  const X=i=> pl+(W-pl-pr)*(i+0.5)/n;
+  const Y=v=> pt+(Hh-pt-pb)*(1-v/yMax);
+  for(let g=0; g<4; g++){
+    const tv=yMax*g/3, yv=Y(tv);
+    svg.appendChild(el("line",{x1:pl,y1:yv.toFixed(1),x2:W-pr,y2:yv.toFixed(1),stroke:"#ececec"}));
+    const tx=el("text",{x:pl-5,y:(yv+3).toFixed(1),["text-anchor"]:"end","font-size":12,fill:"#999"});
+    tx.textContent=(yMax>=10? Math.round(tv).toString() : (Math.round(tv*10)/10).toString()); svg.appendChild(tx);
+  }
   const slot=(W-pl-pr)/n;
-  const bw=slot*(groups>1?0.30:0.62);
-  const gap=groups>1?slot*0.05:0;
-  const base=Y(0);                           // 基线＝零线（旧代码误用 Hh-pt-pb，令柱高系统性少 22px、柱底悬空）
-  const seriesList=[{name:opt.label||"降水", vals:vals, color:opt.color||"#2E86DE"}].concat(extras);
+  const bw=slot*(groups===1?0.55:0.30);
+  const gap=groups===1?0:slot*0.05;
+  const base=Y(0);
   for(let i=0;i<n;i++){
     const cx=X(i), gw=bw*groups+gap*(groups-1), gx=cx-gw/2;
-    const pt0=(opt.ptypes||[])[i]||0;         // 降水类型：0无 1降雨 2降雪 3雨夹雪
+    const pt0=(opt.ptypes||[])[i]||0;
     for(let gi=0;gi<groups;gi++){
-      const s=seriesList[gi], v=(s.vals && s.vals[i]!==undefined) ? s.vals[i] : 0;
+      const s=seriesList[gi], v=(s.vals&&s.vals[i]!==undefined&&s.vals[i]!==null)? s.vals[i] : 0;
       const bx=gx+gi*(bw+gap);
-      let bh=0;
-      if(v>0 || (groups===1 && pt0)){          // 单系列：降雪水当量不足 0.1mm 仍保留最小柱以承载类型着色
-        bh=Math.max(base-Y(v),3);              // 小值也保证 3px 可见高度（不再被大量程压成亚像素）
-        const color = groups>1 ? s.color : (PT_FILL[pt0]||PT_FILL_FB);
-        svg.appendChild(el("rect",{"class":"geo",x:bx,y:base-bh,width:bw,height:bh,rx:3,fill:color}));
-      }
-      // 柱顶直接标出数值；单系列时微量（折合不足 0.1mm）标「<0.1」、真正无降水标「0」（浅灰）
-      // 分组柱只在有值时才标（否则两根 0 柱都标「0」会明显变噪）
-      if(!opt.noPointLabels && (v>0 || groups===1)){
-        const lab=(v>0 ? fmt(v) : (pt0 ? "<0.1" : "0"));
-        const ly=bh ? base-bh-5 : base-6;
-        const tx=el("text",{x:bx+bw/2,y:ly,["text-anchor"]:"middle","font-size":(groups>1?11:12),fill:(v>0?"#5b6166":"#9aa0a4"),["font-weight"]:"700"});
-        tx.textContent=lab; svg.appendChild(tx);
-      }
+      if(!(v>0 || (groups===1 && pt0))) continue;     // 无降水不画柱
+      const bh=Math.max(base-Y(v),3);
+      const color = groups===1 ? (PT_FILL[pt0]||PT_FILL_FB) : s.color;
+      svg.appendChild(el("rect",{"class":"geo",x:bx.toFixed(1),y:(base-bh).toFixed(1),
+                                 width:bw.toFixed(1),height:bh.toFixed(1),rx:2,fill:color}));
+      const lab=(v>=10? Math.round(v).toString() : v.toFixed(1));
+      const tx=el("text",{x:(bx+bw/2).toFixed(1),y:(base-bh-4).toFixed(1),["text-anchor"]:"middle","font-size":11,fill:"#444"});
+      tx.textContent=lab; svg.appendChild(tx);
     }
+    const tx=el("text",{x:cx.toFixed(1),y:Hh-9,["text-anchor"]:"middle","font-size":11,fill:"#888"});
+    tx.textContent=labels[i]; svg.appendChild(tx);
   }
-  const tk = opt.tickEvery||1;
-  for(let i=0;i<n;i+=tk){ if(!labels[i]) continue; const tx=el("text",{x:X(i),y:Hh-10,["text-anchor"]:"middle","font-size":13,fill:"#6B7378"}); tx.textContent=labels[i]; svg.appendChild(tx); }
-  // 选日期（与 48 小时图一致）：点击即选、按住左右拖动可连续换日（自由滑动）
   if(opt.pick) bindDragPick(svg, (x,w)=>(x/w*W-pl)/(W-pl-pr)*(n-1), opt.pick.apply,
       {n:n, toggle:opt.pick.toggle, getSel:opt.pick.getSel, cancel:opt.pick.cancel});
   if(opt.pick) svg._pickCtx={n:n, X:X, pt:pt, pb:pb, Hh:Hh, W:W, pl:pl, pr:pr, getRows:opt.getRows};
@@ -2366,64 +2595,58 @@ function renderExplorer(){
   const labs=DATA.meta.dailyDates.map(d=>d.slice(5));
   const nd=labs.length;
   const fmtD=v=>String(Math.round(v*10)/10);
+  // 说明行「点击任意图表选择日期…」已删除（2026-10-17 用户要求）
   // 选日期：拖动/点击直接设置（不做逐格 toggle，避免拖动时反复闪断）；
   // 「再点同一日取消」由 bindDragPick 的 toggle 逻辑在 pointerup（未拖动）时处理
   const setDay=i=>{ DAY_SEL=i; paintDaySel(); updateExplorerInfo(); };
   const DAY_PICK={ toggle:true, getSel:()=>DAY_SEL, cancel:()=>setDay(-1), apply:i=>setDay(i) };
-  // 两周（14 天）横轴点位密集：日期刻度隔天标注；数值一律「逐点直接标在图上」（2026-09-21 起，
-  // 不再因 14 天而关闭标值——用户要求各图直接显示数值，免去点选才能看读数）
-  const xopt={tickEvery: nd>9?2:1};
-  // 固定四图（对齐石油工程展示方式，2026-10-16 用户定）：降水（含降雪）→ 气温（含体感）→ 阵风·均风 → 能见度
-  // 能见度例外（2026-10-16）：九章后端当前**没有 visibility 要素**，逐时取回全是 0，
-  // point_daily 会把 series.visMin 填满哨兵 10000（一条假的「能见度 10 公里」平线）。
-  // 故按 Python 侧落的 pt.hasVis 决定本图画不画；后端补齐该要素后会自动出现
-  // （与石油工程 render_points_html 的 has_vis 同一策略）。
+  // 固定四图（与石油工程完全一致）：降水（降雪并列柱）→ 气温（体感虚线）→ 阵风·均风 → 能见度
+  // 横轴逐日全标（工程口径，不再隔天抽稀）
   EXP_CHARTS.forEach(k=>{
     const def=ELEM_DEFS[k];
-    if(k==="vis" && !pt.hasVis) return;       // 该点无真实能见度数据 → 本图不出现
+    // 能见度：数据驱动 —— 该点逐日 visMin 全为 null 时不画（x1_visibility 仅前 162h 有值）
+    if(k==="vis" && !(pt.series.visMin||[]).some(v=>v!==null&&v!==undefined)) return;
     // 缺该要素的逐日序列时不画这一图（避免整段报错导致四图全无）
     if(def.type!=="bar" && def.keys.some(kk=>!Array.isArray(pt.series[kk]))) return;
     const box=document.createElement("div"); box.className="ec";
     const h=document.createElement("div"); h.className="ec-h"; h.textContent=`${def.name}（${def.unit}）`;
-    const svg=document.createElementNS(NS,"svg"); svg.setAttribute("class","chart"); svg.setAttribute("preserveAspectRatio","none");
+    const svg=document.createElementNS(NS,"svg"); svg.setAttribute("class","chart");
+    svg.setAttribute("preserveAspectRatio","xMinYMin meet");   // 与工程同款：等比缩放不变形
     box.appendChild(h);
     const leg=document.createElement("div"); leg.className="ec-legend";
     box.appendChild(leg);
     box.appendChild(svg); EXPLORER.appendChild(box);
     if(def.type==="bar"){
-      // 降水图：降雨（液/水当量）与降雪并列为同一天内的两根柱
+      // 降水图：降雨与降雪（水当量）同一天内并列两根柱
       const rain=((pt.series[def.keys[0]] || pt.series.precip)||[]).map(v=>v||0);
       const snow=(pt.series.snow||[]).map(v=>v||0);
-      const dmax=Math.max(...rain, ...snow, 0);
-      let yMax, thresholds;
-      if(dmax < 5){            // 量小：仅显示 5mm 参考线，y 轴上限取 5
-        yMax=5; thresholds=[{v:5,color:"#7FB3D5",label:"5mm"}];
-      } else {                 // 量大：显示大雨 10mm 警戒线
-        yMax=Math.max(10, Math.ceil((dmax*1.1)/5)*5);
-        thresholds=[{v:10,color:"#C0392B",label:"大雨 10mm"}];
-      }
       const ptypes=pt.series.ptype||[];
       leg.innerHTML=eic(def.icon,"plain",true)
-        +`<span class="lg"><i style="background:#2E86DE"></i>降雨(mm)</span>`
-        +`<span class="lg"><i style="background:#5DD6E8"></i>降雪(水当量 mm)</span>`;
-      pointBar(svg, labs, rain, Object.assign({yMax:yMax, thresholds:thresholds, ptypes:ptypes,
+        +`<span class="lg"><i style="background:#2E86DE"></i>降雨</span>`
+        +`<span class="lg"><i style="background:#5DD6E8"></i>降雪（水当量，与降雨并列）</span>`;
+      pointBar(svg, labs, rain, {ptypes:ptypes,
         label:"降雨", color:"#2E86DE", extra:[{name:"降雪", vals:snow, color:"#5DD6E8"}],
         pick:DAY_PICK,
-        getRows:i=>[{t:`降雨 ${fmtD(rain[i])} mm ${ptypeText(ptypes[i])}`.replace(/\s+$/,""), c:"#1565C0"},
-                    {t:`降雪 ${fmtD(snow[i])} mm`, c:"#2A9DBF"}]}, xopt));
+        getRows:i=>[{t:`降雨 ${fmtD(rain[i])} mm${ptypes[i]? " "+ptypeText(ptypes[i]) : ""}`, c:"#2E86DE"},
+                    {t:`降雪 ${fmtD(snow[i])} mm`, c:"#5DD6E8"}]});
     } else {
       let series=def.keys.map((kk,i)=>({name:def.labels[i],color:def.colors[i],data:pt.series[kk]}));
-      // 气温图并入体感：体感画虚线且不逐点标值（4 条线同时标值会互相遮挡；点选日期时数值框仍给出）
+      // 气温图并入体感：虚线且不逐点标值（4 条线同时标值会互相遮挡；点选日期时数值框仍给全值）
       if(k==="temp" && Array.isArray(pt.series.appMax) && Array.isArray(pt.series.appMin)){
         series=series.concat([
-          {name:"每日最高体感",color:"#D84315",data:pt.series.appMax,nolabel:true},
-          {name:"每日最低体感",color:"#7E57C2",data:pt.series.appMin,nolabel:true}]);
+          {name:"最高体感",color:"#D84315",data:pt.series.appMax,nolabel:true,dash:"6 4"},
+          {name:"最低体感",color:"#7E57C2",data:pt.series.appMin,nolabel:true,dash:"6 4"}]);
       }
       leg.innerHTML=eic(def.icon,"plain",true)
-        + series.map(s=>`<span class="lg"><i style="background:${s.color}"></i>${s.name}</span>`).join("");
-      pointLine(svg, labs, series, Object.assign({thresholds:def.thr,
-        pick:DAY_PICK,
-        getRows:i=>series.map(s=>({t:`${s.name} ${fmtD(s.data[i])} ${def.unit}`, c:s.color}))}, xopt));
+        + series.map(s=>`<span class="lg"><i style="background:${s.color}"></i>${s.name}</span>`).join("")
+        + (k==="temp"? `<span class="lg" style="color:#7a8086">虚线＝体感，舒适度预警由体感承担</span>` : "")
+        + (k==="vis"? `<span class="lg" style="color:#7a8086">越低越影响行车与吊装；低于 1000m 即进入预警</span>` : "");
+      // 能见度缺测（null）在 pointLine 里自动断开折线、不画点不标值
+      pointLine(svg, labs, series, {pick:DAY_PICK,
+        getRows:i=>series.map(s=>{
+          const v=s.data[i];
+          return {t:`${s.name} ${(v===null||v===undefined)? "—（该日无数据）" : fmtD(v)+" "+def.unit}`, c:s.color};
+        })});
     }
   });
   paintDaySel();
@@ -2434,105 +2657,169 @@ renderExplorer();
 // ============ 选中作业点的「未来 48 小时」逐小时要素合并图（降水柱 + 均风/阵风/气温折线；配色对齐石油工程；可点击图表选时） ============
 const H_EXPLORER = document.getElementById("hourlyCharts");
 let HOURLY_SVG = null, HOURLY_MARKER = null, HOURLY_N = 0;
-const HW=680, HH=300, HPL=44, HPR=52, HPT=24, HPB=30;
-function hxOf(i){ return HPL+(HW-HPL-HPR)*(HOURLY_N<=1?0.5:i/(HOURLY_N-1)); }
+let HOURLY_CTX = null;      // 48h 图绘制上下文（轴/序列/数值框 group），供读数更新复用
+// 工程 48 小时图几何（2026-10-17 对齐 render_points_html.chart_js）：760×268，
+// 绘图区 left 50 / right 706 / top 44 / bot 235
+// 图例已从图内移到图下方（HTML），故 HH 由 340 收到 268，去掉底部空档
+const HW=760, HH=268, HPL=50, HPR=706, HPT=44, HPB=235;
+function hxOf(i){ return HPL+(i/Math.max(HOURLY_N-1,1))*(HPR-HPL); }
 function renderHourlyExplorer(){
   H_EXPLORER.innerHTML="";
   if(SEL<0){ H_EXPLORER.innerHTML='<div class="empty-tip">点击上方地图选择作业点，下方显示该点未来 48 小时要素合并图。</div>';
-    HOURLY_N=0; HOURLY_SVG=null; HOURLY_MARKER=null; return; }
+    HOURLY_N=0; HOURLY_SVG=null; HOURLY_MARKER=null; HOURLY_CTX=null; return; }
   const pt=DATA.points[SEL];
   if(!pt.hx){
     H_EXPLORER.innerHTML='<div class="empty-tip">该工区作业点较多，逐小时明细未嵌入；请见「未来 两周」页的逐日要素图表。</div>';
-    HOURLY_N=0; HOURLY_SVG=null; HOURLY_MARKER=null; return;
+    HOURLY_N=0; HOURLY_SVG=null; HOURLY_MARKER=null; HOURLY_CTX=null; return;
   }
+  // 说明行：**只保留降水类型图例**（2026-10-17 用户要求删掉「仅展示未来 48 小时…」整段文字）
+  const _hn=document.createElement("div"); _hn.className="ec-note";
+  _hn.innerHTML="柱颜色 "+ptLegendHtml("rain");
+  H_EXPLORER.appendChild(_hn);
   const box=document.createElement("div"); box.className="ec"; H_EXPLORER.appendChild(box);
   const n=Math.min(pt.hx.temp.length, NEAR_H); HOURLY_N=n;
-  const precip=pt.hx.precip.slice(0,n), wind=pt.hx.wind.slice(0,n), gust=pt.hx.gust.slice(0,n), temp=pt.hx.temp.slice(0,n);
+  const precip=pt.hx.precip.slice(0,n), wind=pt.hx.wind.slice(0,n),
+        gust=pt.hx.gust.slice(0,n), temp=pt.hx.temp.slice(0,n);
   const apparent=(pt.hx.apparent||[]).slice(0,n);
-  const bottom=HH-HPB;
-  // 图例（配色 / 文字对齐石油工程）
-  const leg=document.createElement("div"); leg.className="ec-legend";
-  leg.innerHTML= ptLegendHtml("rain")
-    +`<span class="lg">${eic("wind","plain",true)}<i style="background:#1F7A6B"></i>均风(m/s)</span>`
-    +`<span class="lg">${eic("wind","plain",true)}<i style="background:#8E44AD"></i>阵风(m/s)</span>`
-    +`<span class="lg">${eic("temp","plain",true)}<i style="background:#2E7DA8"></i>气温(℃)</span>`
-    +`<span class="lg">${eic("temp","plain",true)}<i style="background:#C0392B"></i>体感(℃)</span>`;
-  box.appendChild(leg);
-  const svg=document.createElementNS(NS,"svg"); svg.setAttribute("class","chart"); svg.setAttribute("viewBox",`0 0 ${HW} ${HH}`); svg.setAttribute("preserveAspectRatio","none");
+  const ptypes=(pt.hx.pt||[]).slice(0,n);
+  // —— 三轴范围（工程 chart_js 口径）——
+  const tMin=Math.min(...temp), tMax=Math.max(...temp);
+  const tLo=Math.min(tMin,0)-2, tHi=tMax+2;
+  const wHi=Math.max(...wind.concat(gust).concat([1]))*1.15;
+  const pMax=Math.max(...precip.concat([0.1]));
+  const yT=v=>HPB-(v-tLo)/(tHi-tLo)*(HPB-HPT);
+  const yW=v=>HPB-(v/wHi)*(HPB-HPT);
+  const yP=v=>HPB-(v/pMax)*(HPB-HPT)*0.96;
+  const svg=document.createElementNS(NS,"svg"); svg.setAttribute("class","chart");
+  svg.setAttribute("viewBox",`0 0 ${HW} ${HH}`); svg.setAttribute("preserveAspectRatio","xMinYMin meet");
   box.appendChild(svg);
-  // 自由滑动选时（与石油工程 48 小时图完全一致）：按下即选、按住左右拖动连续跟随
-  bindDragPick(svg, (x,w)=>(x/w*HW-HPL)/(HW-HPL-HPR)*(HOURLY_N-1), selectHour, {n:HOURLY_N});
-  // 左轴：降水(mm)，柱占绘图区 85% 高（加高以更突出）
-  const pMax=Math.max(...precip,0.1);
-  const precipAxis=Math.max(pMax*1.12,10);
-  const barRegion=(bottom-HPT)*0.85;
-  const Yp=v=> bottom-(v/precipAxis)*barRegion;
-  // 右轴：风 / 阵风 / 气温（m/s、℃ 共用绘图高度）
-  const wMax=Math.max(...gust,1)*1.12, wMin=0;
-  const tMax=Math.max(...temp,1)+3, tMin=Math.min(...temp,-1)-3;
-  const Yw=v=> bottom-((v-wMin)/(wMax-wMin))*(bottom-HPT);
-  const Yt=v=> bottom-((v-tMin)/(tMax-tMin))*(bottom-HPT);
-  // 背景网格
-  for(let g=0;g<=4;g++){const y=HPT+(bottom-HPT)*g/4; svg.appendChild(el("line",{x1:HPL,y1:y,x2:HW-HPR,y2:y,stroke:"#EFEFEF",["stroke-width"]:1}));}
-  // 左轴降水刻度
-  [0,precipAxis/2,precipAxis].forEach(v=>{const y=Yp(v);const tx=el("text",{x:HPL-6,y:y+3,["text-anchor"]:"end","font-size":10,fill:"#7a8086"});tx.textContent=Math.round(v);svg.appendChild(tx);});
-  // 右轴风刻度
-  [0,wMax/2,wMax].forEach(v=>{const y=Yw(v);const tx=el("text",{x:HW-HPR+6,y:y+3,["text-anchor"]:"start","font-size":10,fill:"#7a8086"});tx.textContent=Math.round(v);svg.appendChild(tx);});
-  // 降水柱（分级着色，对齐石油工程；柱内标注降水类型图标：降雨 / 降雪 / 雨夹雪）
-  const bw=((HW-HPL-HPR)/n)*0.6;
-  const ptypes=pt.hx.pt||[];
-  precip.forEach((v,i)=>{const pt0=ptypes[i]||0; if(!(v>0)&&!pt0)return;const x=hxOf(i),y=Yp(v),h=Math.max(bottom-y,3);const color=PT_FILL[pt0]||PT_FILL_FB;svg.appendChild(el("rect",{"class":"geo",x:x-bw/2,y:bottom-h,width:bw,height:h,rx:2,fill:color}));});
-  // 降水阈值线：小时级短时降水口径（大雨 3 / 暴雨 6 / 大暴雨 15 mm/h，2026-10-09 用户定）
-  // 注意：这里**不是**日累计 25/50 —— 本图纵轴是逐小时降水，画 25/50 会与轴口径不符
-  [{v:RAIN_H.heavy,c:"#E0822C",t:"大雨 3"},{v:RAIN_H.storm,c:"#C0392B",t:"暴雨 6"},{v:RAIN_H.torrent,c:"#7B1B12",t:"大暴雨 15"}].forEach(th=>{if(th.v>precipAxis)return;const y=Yp(th.v);svg.appendChild(el("line",{x1:HPL,y1:y,x2:HW-HPR,y2:y,stroke:th.c,["stroke-width"]:1.2,["stroke-dasharray"]:"5 4",opacity:.75}));const tx=el("text",{x:HPL+3,y:y-4,["text-anchor"]:"start","font-size":10.5,fill:th.c,["font-weight"]:"700"});tx.textContent=th.t;svg.appendChild(tx);});
-  // 风阈值线（6级10.8 / 8级17.2）
-  [{v:10.8,c:"#E0822C",t:"6级"},{v:17.2,c:"#C0392B",t:"8级"}].forEach(th=>{if(th.v>wMax)return;const y=Yw(th.v);svg.appendChild(el("line",{x1:HPL,y1:y,x2:HW-HPR,y2:y,stroke:th.c,["stroke-width"]:1.1,["stroke-dasharray"]:"5 4",opacity:.7}));const tx=el("text",{x:HW-HPR,y:y-4,["text-anchor"]:"end","font-size":10.5,fill:th.c,["font-weight"]:"700"});tx.textContent=th.t;svg.appendChild(tx);});
-  // 气温阈值线（高温35 / 0°）
-  [{v:35,c:"#C0392B",t:"35°"},{v:0,c:"#2E7DA8",t:"0°"}].forEach(th=>{if(th.v<tMin||th.v>tMax)return;const y=Yt(th.v);svg.appendChild(el("line",{x1:HPL,y1:y,x2:HW-HPR,y2:y,stroke:th.c,["stroke-width"]:1.1,["stroke-dasharray"]:"5 4",opacity:.7}));const tx=el("text",{x:HW-HPR,y:y-4,["text-anchor"]:"end","font-size":10.5,fill:th.c,["font-weight"]:"700"});tx.textContent=th.t;svg.appendChild(tx);});
-  // 折线：均风（绿实线）、阵风（紫虚线）、气温（蓝实线）、体感（红实线，共温轴）
-  // （能见度已于 2026-10-16 按用户要求从本图移除，不再画独立能见度轴）
-  const drawLine=(data,Yc,color,dash)=>{let p="";data.forEach((v,i)=>{const x=hxOf(i),y=Yc(v);p+=(i?"L":"M")+x.toFixed(1)+" "+y.toFixed(1)+" ";});const a={"class":"geo",d:p,fill:"none",stroke:color,["stroke-width"]:2.2,["stroke-linejoin"]:"round",["stroke-linecap"]:"round"};if(dash)a["stroke-dasharray"]=dash;svg.appendChild(el("path",a));};
-  drawLine(wind,Yw,"#1F7A6B");
-  drawLine(gust,Yw,"#8E44AD","6 4");
-  drawLine(temp,Yt,"#2E7DA8");
-  drawLine(apparent,Yt,"#C0392B");
-  // X 轴日期
-  for(let i=0;i<n;i+=24){const t=DATA.hourly.time[i]||"";if(!t)continue;const tx=el("text",{x:hxOf(i),y:HH-9,["text-anchor"]:"middle","font-size":11,fill:"#6B7378"});tx.textContent=t.slice(5,10);svg.appendChild(tx);}
-  // 当前小时竖线（点击图表移动）
-  const marker=el("line",{x1:0,y1:HPT,x2:0,y2:bottom,stroke:"#C0392B","stroke-width":1.5,["stroke-dasharray"]:"4 3",opacity:.85});
-  svg.appendChild(marker); HOURLY_SVG=svg; HOURLY_MARKER=marker;
+  // 图例（2026-10-17）：**移出图表**、放到图下方并放大字号，不再占绘图区、也不遮挡图形
+  const hleg=document.createElement("div"); hleg.className="hleg";
+  const lnItem=(col,txt,dash)=>`<span class="hl"><i class="ln${dash?" dash":""}" style="color:${col};background:${dash?"none":col}"></i>${txt}</span>`;
+  hleg.innerHTML = lnItem("#E0822C","气温 °C") + lnItem("#0FA87A","均风 m/s")
+    + lnItem("#D84315","阵风 m/s",true) + lnItem("#8E44AD","体感 °C",true);
+  box.appendChild(hleg);
+  // 网格 + 左（气温）/右（风）双轴刻度
+  for(let g=0;g<=4;g++){
+    const tv=tLo+(tHi-tLo)*g/4, yv=yT(tv);
+    svg.appendChild(el("line",{x1:HPL,y1:yv,x2:HPR,y2:yv,stroke:"#eee"}));
+    const t1=el("text",{x:HPL-5,y:yv+3,["text-anchor"]:"end","font-size":12,fill:"#c06"});
+    t1.textContent=tv.toFixed(0); svg.appendChild(t1);
+    const t2=el("text",{x:HPR+5,y:yv+3,["text-anchor"]:"start","font-size":12,fill:"#8a5cbf"});
+    t2.textContent=(wHi*g/4).toFixed(0); svg.appendChild(t2);
+  }
+  // 轴域标签已去掉（2026-10-17）：图例移到图下方后已标明「气温 ℃ / 均风 m/s」，
+  // 图内再写一次会压在曲线与数值框上（图高只有 ~130px，字挤在一起）。
+  // 只保留中间分隔虚线。
+  const midX=(HPL+HPR)/2;
+  svg.appendChild(el("line",{x1:midX,y1:HPT,x2:midX,y2:HPB,stroke:"#ddd",["stroke-width"]:1,["stroke-dasharray"]:"3 3"}));
+  // 降水柱（按降水类型着色）
+  const bw=(HPR-HPL)/n*0.55;
+  for(let i=0;i<n;i++){
+    if(!(precip[i]>0.05) && !ptypes[i]) continue;
+    const bh=Math.max(HPB-yP(precip[i]),3);
+    svg.appendChild(el("rect",{"class":"geo",x:(hxOf(i)-bw/2).toFixed(1),y:(HPB-bh).toFixed(1),
+      width:bw.toFixed(1),height:bh.toFixed(1),rx:1,fill:(PT_FILL[ptypes[i]]||PT_FILL_FB)}));
+  }
+  // 小时级降水阈值线（大雨 3 / 暴雨 6 / 大暴雨 15 mm/h）
+  [{v:RAIN_H.heavy,c:"#E0822C",t:"大雨 3"},{v:RAIN_H.storm,c:"#C0392B",t:"暴雨 6"},
+   {v:RAIN_H.torrent,c:"#7B1F14",t:"大暴雨 15"}].forEach(th=>{
+    if(th.v>pMax) return;
+    const y=yP(th.v);
+    svg.appendChild(el("line",{x1:HPL,y1:y,x2:HPR,y2:y,stroke:th.c,["stroke-width"]:1.1,["stroke-dasharray"]:"5 4",opacity:.7}));
+    const tx=el("text",{x:HPR-5,y:y-4,["text-anchor"]:"end","font-size":10.5,fill:th.c});
+    tx.textContent=th.t+" mm/h"; svg.appendChild(tx);
+  });
+  // 气温实线 + 每 6 小时圆点
+  let tP=""; for(let i=0;i<n;i++) tP+=hxOf(i).toFixed(1)+","+yT(temp[i]).toFixed(1)+" ";
+  svg.appendChild(el("polyline",{points:tP.trim(),fill:"none",stroke:"#E0822C",["stroke-width"]:2.8,["stroke-linejoin"]:"round"}));
+  for(let i=0;i<n;i+=6) svg.appendChild(el("circle",{cx:hxOf(i).toFixed(1),cy:yT(temp[i]).toFixed(1),
+    r:2.2,fill:"#E0822C",stroke:"#fff",["stroke-width"]:1}));
+  // 体感虚线（共用气温轴）
+  let aP=""; for(let i=0;i<n;i++) aP+=hxOf(i).toFixed(1)+","+yT(apparent[i]).toFixed(1)+" ";
+  svg.appendChild(el("polyline",{points:aP.trim(),fill:"none",stroke:"#8E44AD",["stroke-width"]:1.8,
+    ["stroke-dasharray"]:"6 4",["stroke-linejoin"]:"round"}));
+  // 风力带（均风~阵风 半透明填充）
+  let band=""; for(let i=0;i<n;i++) band+=hxOf(i).toFixed(1)+","+yW(wind[i]).toFixed(1)+" ";
+  for(let i=n-1;i>=0;i--) band+=hxOf(i).toFixed(1)+","+yW(gust[i]).toFixed(1)+" ";
+  svg.appendChild(el("polygon",{points:band,fill:"rgba(15,168,122,.10)"}));
+  // 均风实线（绿）/ 阵风虚线（红）
+  let wP=""; for(let i=0;i<n;i++) wP+=hxOf(i).toFixed(1)+","+yW(wind[i]).toFixed(1)+" ";
+  svg.appendChild(el("polyline",{points:wP.trim(),fill:"none",stroke:"#0FA87A",["stroke-width"]:2.4,["stroke-linejoin"]:"round"}));
+  let gP=""; for(let i=0;i<n;i++) gP+=hxOf(i).toFixed(1)+","+yW(gust[i]).toFixed(1)+" ";
+  svg.appendChild(el("polyline",{points:gP.trim(),fill:"none",stroke:"#D84315",["stroke-width"]:2,
+    ["stroke-dasharray"]:"7 3",["stroke-linejoin"]:"round"}));
+  // 日期刻度（每 24 小时）
+  for(let i=0;i<n;i+=24){
+    const t=((DATA.hourly&&DATA.hourly.time)||[])[i]||""; if(!t) continue;
+    const tx=el("text",{x:hxOf(i).toFixed(1),y:HPB+14,["text-anchor"]:"middle","font-size":12,fill:"#888"});
+    tx.textContent=t.slice(5,10); svg.appendChild(tx);
+  }
+  // 光标 + 三个圆点 + 图内数值框（13.5px，与工程一致）
+  const cur=el("line",{x1:0,y1:HPT,x2:0,y2:HPB,stroke:"#1f2933",["stroke-width"]:1.2,["stroke-dasharray"]:"4 3"});
+  svg.appendChild(cur);
+  const cmT=el("circle",{r:4.5,fill:"#E0822C",stroke:"#fff",["stroke-width"]:1.5});
+  const cmW=el("circle",{r:4.5,fill:"#0FA87A",stroke:"#fff",["stroke-width"]:1.5});
+  const cmG=el("circle",{r:4.5,fill:"#D84315",stroke:"#fff",["stroke-width"]:1.5});
+  svg.appendChild(cmT); svg.appendChild(cmW); svg.appendChild(cmG);
+  const rbox=el("g",{"class":"hread"}); svg.appendChild(rbox);
+  HOURLY_SVG=svg; HOURLY_MARKER=cur;
+  HOURLY_CTX={cur,cmT,cmW,cmG,rbox,n,precip,temp,apparent,gust,wind,ptypes,yT,yW};
+  // 自由滑动选时：按下即选、按住左右拖动连续跟随
+  bindDragPick(svg, (x,w)=>(x/w*HW-HPL)/(HPR-HPL)*(HOURLY_N-1), selectHour, {n:HOURLY_N});
+  // 读数条（工程 .hval 样式）——2026-10-17 移到图表**上方**：先建节点再插到 svg 前面
+  let hval=document.getElementById("hval");
+  if(!hval){ hval=document.createElement("div"); hval.id="hval"; hval.className="hval"; }
+  if(hval.parentNode!==box || hval.nextSibling!==svg) box.insertBefore(hval, svg);
   updateHourlyMarker();
   updateHourlyReadout();
 }
-// 在 48 小时图上直接标出「当前选中小时」的具体数值
+// 在 48 小时图上直接标出「当前选中小时」的具体数值（工程 paintRead + #hval 同款）
 function updateHourlyReadout(){
-  if(!HOURLY_SVG || HOURLY_N<=0) return;
-  let g=document.getElementById("hourlyReadout");
-  if(!g){ g=document.createElementNS(NS,"g"); g.setAttribute("id","hourlyReadout"); }
-  HOURLY_SVG.appendChild(g); g.innerHTML="";
-  const pt=DATA.points[SEL]; if(!pt || !pt.hx) return;
-  const h=CUR_HOUR;
-  const ptype=(pt.hx.pt||[])[h]||0;
-  const pLabel=ptypeText(ptype);
-  const appv=(pt.hx.apparent||[])[h]||0;
-  const rows=[["降水 ", pt.hx.precip[h].toFixed(1)+" mm/h"+(pLabel?" "+pLabel:""), "#0D47A1"],
-              ["气温 ", pt.hx.temp[h].toFixed(1)+" ℃", "#1A5A87"],
-              ["体感 ", appv.toFixed(1)+" ℃", "#C0392B"],
-              ["阵风 ", pt.hx.gust[h].toFixed(1)+" m/s", "#5B2A7D"],
-              ["均风 ", pt.hx.wind[h].toFixed(1)+" m/s", "#0F5B4C"]];
-  const x=hxOf(h);
-  const cw=t=>t.split("").reduce((a,ch)=>a+(ch.charCodeAt(0)>255?11.6:6.4),0);
-  const bw=Math.max(...rows.map(r=>cw(r[0])+cw(r[1])))+20;
-  const lh=15, pady=6, bh=rows.length*lh+pady*2;
-  let bx=x+10; if(bx+bw>HW-HPR) bx=x-10-bw; if(bx<HPL) bx=HPL;
-  const by=HPT+4;
-  g.appendChild(el("rect",{x:bx,y:by,width:bw,height:bh,rx:6,fill:"rgba(255,255,255,.96)",stroke:"#C0392B","stroke-width":1.2}));
-  rows.forEach((r,i)=>{ const ty=by+pady+11+i*lh;
-    g.appendChild(el("rect",{x:bx+5,y:ty-11,width:cw(r[0])+cw(r[1])+8,height:14.5,rx:5,fill:tintOf(r[2])}));
-    const lb=el("text",{x:bx+9,y:ty,"font-size":11.5,fill:"#3A4146"});
+  const C=HOURLY_CTX; if(!C || !C.n) return;
+  const h=Math.max(0,Math.min(C.n-1,CUR_HOUR));
+  const ptS=ptypeText(C.ptypes[h]||0);
+  const cw=t=>{ let s=0; for(let i=0;i<t.length;i++) s+=(t.charCodeAt(i)>255?13.6:7.5); return s; };
+  const rows=[["降水 ",C.precip[h].toFixed(1)+" mm/h"+(ptS?" "+ptS:""),"#0D47A1"],
+              ["气温 ",C.temp[h].toFixed(1)+" ℃","#8A4B00"],
+              ["体感 ",C.apparent[h].toFixed(1)+" ℃","#8E44AD"],
+              ["阵风 ",C.gust[h].toFixed(1)+" m/s","#8A2A0E"],
+              ["均风 ",C.wind[h].toFixed(1)+" m/s","#0F5B4C"]];
+  // —— 图内数值框 ——
+  const g=C.rbox; while(g.firstChild) g.removeChild(g.firstChild);
+  let bw=0; rows.forEach(r=>{ bw=Math.max(bw, cw(r[0])+cw(r[1])); }); bw+=24;
+  const lh=18.5, pady=7, bh=rows.length*lh+pady*2;
+  const sx=hxOf(h);
+  let bx=sx+12; if(bx+bw>HPR) bx=sx-12-bw; if(bx<HPL) bx=HPL;
+  const by=HPT+26;
+  g.appendChild(el("rect",{x:bx,y:by,width:bw,height:bh,rx:7,fill:"rgba(255,255,255,.96)",
+    stroke:"#C0392B","stroke-width":1.2}));
+  const HT={"#8A4B00":"#FBEAD3","#0D47A1":"#D8E9FA","#0F5B4C":"#D9EFE7","#8A2A0E":"#FBE0D6"};
+  rows.forEach((r,i)=>{
+    const ty=by+pady+14+i*lh;
+    g.appendChild(el("rect",{x:bx+6,y:ty-13,width:cw(r[0])+cw(r[1])+10,height:17.5,rx:5,
+      fill:HT[r[2]]||"#EEF2F5"}));
+    const lb=el("text",{x:bx+11,y:ty,"font-size":13.5,fill:"#3A4146"});
     lb.textContent=r[0]; g.appendChild(lb);
-    const vv=el("text",{x:bx+9+cw(r[0]),y:ty,"font-size":11.5,fill:r[2],["font-weight"]:"900"});
-    vv.textContent=r[1]; g.appendChild(vv); });
+    const vv=el("text",{x:bx+11+cw(r[0]),y:ty,"font-size":13.5,fill:r[2],["font-weight"]:"900"});
+    vv.textContent=r[1]; g.appendChild(vv);
+  });
+  // —— 底部读数条（.hval）——
+  const hval=document.getElementById("hval");
+  if(hval){
+    const t=(DATA.hourly.time||[])[h]||"";
+    const pn=(SEL>=0 && DATA.points[SEL]) ? ptTag(SEL) : "";
+    const lvR=v=>v>=5?"danger":(v>=2?"warn":"ok");
+    const lvG=v=>v>=24.5?"danger":(v>=17.2?"warn":"ok");   // 阵风：8级(17.2)起注意、10级(24.5)起预警
+    const lvW=v=>v>=17.2?"danger":(v>=10.8?"warn":"ok");   // 均风：6级(10.8)起注意、8级(17.2)起预警
+    hval.innerHTML=(pn?'<span class="pn">'+pn+'</span>':'')
+      + '<span class="t">'+(t.slice(5,10)+" "+t.slice(11,16))+'</span>'
+      + eic("rain",lvR(C.precip[h]))+'降水 <b class="pv">'+C.precip[h].toFixed(1)+' mm/h'+(ptS?" "+ptS:"")+'</b> '
+      + eic("temp")+'气温 <b class="tv">'+C.temp[h].toFixed(1)+'℃</b> '
+      + eic("heat")+'体感 <b style="color:#8E44AD;background:#F3E5F5">'+C.apparent[h].toFixed(1)+'℃</b> '
+      + eic("wind",lvG(C.gust[h]))+'阵风 <b class="gv">'+C.gust[h].toFixed(1)+' m/s</b> '
+      + eic("wind",lvW(C.wind[h]))+'均风 <b class="wv">'+C.wind[h].toFixed(1)+' m/s</b>';
+  }
 }
 // 点击 48 小时图表任意位置 → 选中最近小时（替代独立滑块时间轴）
 function selectHour(i){

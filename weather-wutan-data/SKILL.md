@@ -28,7 +28,7 @@ description: 物探/野外项目2周天气看板生成器：输入由数据采�
 
 > ⚠️ **遗留 Open-Meteo 采集点脚本**（`build_region_dashboard.py` / `build_weather_dashboard.py`）。
 > **物探现行主链路已迁到 `weather-wutan-html`**（`build_dashboard.py`：按 `wutan_ta_map.json` 的 `ta_id`
-> 调 **jozzon-mcp（九章雷电网）** 取数、七要素分级、固定四图），由 `beidou/rerun_wutan.py` 编排。
+> 调 **jozzon-mcp（九章雷电网）** 取数、七要素分级、固定四图），由 `beidou/wutan/script/rerun_wutan.py` 编排。
 > 本技能仅在需要「**非 ta_id 的临时 KML/坐标区域图**」时使用，**日常物探项目看板不用它**。
 > 旧脚本仍走 Open-Meteo（`--apikey` 占位、12 坐标/批、有 429 配额），与现行 ta_id 链路相互独立。
 
@@ -102,7 +102,7 @@ KML 自动判断类型：
 - **要素**：Open-Meteo 免费接口无需 API key（脚本里带了一个做兼容）。`timezone=Asia/Shanghai` 保证本地时间正确，页眉不显示时区（按用户要求）。
 - **降水字段与类型码（2026-09-21 扩充）**：`HOURLY` 取 `temperature_2m,precipitation,rain,showers,snowfall,wind_speed_10m,wind_gusts_10m`。语义：`precipitation`＝总降水(mm，含液态与降雪水当量)、`rain`＝雨(mm，**不含阵雨**)、`showers`＝阵雨(mm)、`snowfall`＝降雪(**cm**，与 mm 不同量纲，仅用于「有无降雪」判定)。**`liquid = rain + showers` 是「降雨」的规范口径**（两者单位同为 mm 可直接相加）。派生类型码 `0=无 / 1=降雨 / 2=降雪 / 3=雨夹雪`（`ptype_of(liq, snow, pr, temp)`：has_l= liq>0.05、has_s= snow>0.01；**温度优先——`temp < 0℃` 一律判 2（降雪），只有 `temp ≥ 0℃` 才可能判 3（雨夹雪）**；否则两者兼有→3，仅雪→2，仅液→1，兜底总量>0.05→1。逐时传该小时气温，逐日传「当日有降水时段最高气温」；2026-10-08 起）。两个脚本都已写入输出：`build_weather_dashboard.py` 的 `payload.hourly.{rain,showers,snowfall,liquid,ptype}`；`build_region_dashboard.py` 的 `per["liquid"]/per["ptype"]` 与逐日 `point_daily()["ptype"/"liquid"/"snow"]`。看板柱子类型图标由 `weather-wutan-html` skill 渲染。
 - **风速单位**：`wind_speed_unit=ms`（m/s）。阈值：6级≈10.8m/s、8级≈17.2m/s。
-- **极端天气阈值**（物探参考）：高温≥35℃、低温≤0℃、小时降水≥20mm、日降水≥50mm(暴雨)/≥25mm(大雨)、阵风≥17.2m/s(8级)、持续风≥10.8m/s(6级)。连续降雨窗口取日降水≥10mm 的连续段。
+- **极端天气阈值**（物探参考）：高温≥35℃、低温≤0℃、小时降水≥20mm、日降水≥50mm(暴雨)/≥25mm(大雨)、**阵风≥24.5m/s(十级，预警) / ≥17.2m/s(八级，注意)**、持续风≥17.2m/s(八级) / ≥10.8m/s(六级)。连续降雨窗口取日降水≥10mm 的连续段。**⚠️ 阵风 2026-10-17 起同级比均风高两级风力**（13.9/17.2/24.5/32.7；阵风八级 17.2 = 均风六级 10.8），真源在 `jozzonwx._GUST_TH`。
 - **429 限流**：`http_get_json()` 带退避重试（5 次、指数退避）；预报 12 坐标/批、高程 60 点/批，批间 `time.sleep` 冷却。
 - **KML 解析**：Polygon 用射线法判断点在多边形内；LineString 读取 `<Placemark><name>` 作测线名（注意从正确元素取，避免显示"(未命名)"），沿测线按大圆距离等距采样。
 - **页眉规范**：显示项目名 + 日期区间 + 生成日期，**不写时区、不写坐标、不写"离线看板"**；测线模式额外显示测线名与长度。
