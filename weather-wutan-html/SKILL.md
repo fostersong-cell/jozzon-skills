@@ -138,8 +138,8 @@ FETCH_ENABLED = True    # True=启用实时取数；False=暂时关闭（离线 
   --outfile "daguan-xiangmu-gongqu.html"
 ```
 
-> **⚠️ 必须在 `<BEIDOU>` 目录下运行**：脚本用**相对当前工作目录**搜索 `wutan/kml/wutan_ta_map.json`（可用环境变量 `WUTAN_TA_MAP` 指定绝对路径）。找不到、或本项目 `points[]` 里有 `ta_id` 为 `null`，脚本会**直接报错退出**——不会再回退到 Open-Meteo 网格采样。
-> 取数完成后脚本把 `<name>_data.json`（这里是 `云南大关_data.json`）写到 `--outdir`，需**手工迁移为** `wutan/data/{pin}_data.json`（`wutan/script/rerun_wutan.py` 已自动做这步）。
+> **⚠️ 必须在 `<BEIDOU>` 目录下运行**：脚本用**相对当前工作目录**搜索 `wutan/kml/wutan_ta_map.json`（可用环境变量 `WUTAN_TA_MAP` 指定绝对路径）。找不到、或本项目 `points[]` 里有 `ta_id` 为 `null`，脚本会**直接报错退出**——不会再回退到 Open-Meteo 网格采样。目标区注册文件 `wutan/kml/wutan_ta_map.json` 由 `<SKILLS>/script/build_ta_maps.py` 生成（回填 ta_id 后写入 `wutan/kml/`）。
+> 取数完成后脚本把 `<name>_data.json`（这里是 `云南大关_data.json`）写到 `--outdir`，需**手工迁移为** `wutan/data/{pin}_data.json`（`<SKILLS>/script/rerun_wutan.py` 已自动做这步）。
 
 复合工区（边框 + 多条测线，如大关：区块边框 + 北/南/中线）：
 ```bash

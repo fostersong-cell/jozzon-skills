@@ -28,7 +28,7 @@ description: 物探/野外项目2周天气看板生成器：输入由数据采�
 
 > ⚠️ **遗留 Open-Meteo 采集点脚本**（`build_region_dashboard.py` / `build_weather_dashboard.py`）。
 > **物探现行主链路已迁到 `weather-wutan-html`**（`build_dashboard.py`：按 `wutan_ta_map.json` 的 `ta_id`
-> 调 **jozzon-mcp（九章雷电网）** 取数、七要素分级、固定四图），由 `beidou/wutan/script/rerun_wutan.py` 编排。
+> 调 **jozzon-mcp（九章雷电网）** 取数、七要素分级、固定四图），由 `<SKILLS>/script/rerun_wutan.py` 编排。
 > 本技能仅在需要「**非 ta_id 的临时 KML/坐标区域图**」时使用，**日常物探项目看板不用它**。
 > 旧脚本仍走 Open-Meteo（`--apikey` 占位、12 坐标/批、有 429 配额），与现行 ta_id 链路相互独立。
 

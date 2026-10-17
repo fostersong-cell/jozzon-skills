@@ -113,7 +113,7 @@ KML 自动判断类型：
   - `daily`：逐日 `tempMin/tempMax`、`rainfall`、`snowfall`、`ptype`、`windMax`、`gustMax`、`apparentMin/apparentMax`、`visMin`。
   - `summary`：`totalRainfall`、`maxGust`、`maxWind`、`minTemp`、`maxTemp`、`minApparent/maxApparent`、`minVis`、`maxRainfallDay`、以及小时级峰值 `pHourMax`/`snowHourMax`/`gustHourMax`（供 index / 汇总套用新分级阈值）。
   ⚠️ **`summary` 里的 maxGust/maxTemp/minTemp/pHourMax/snowHourMax 全是「整窗 14 天」值**，不能直接当「未来 48 小时」用——48h 峰值必须在消费侧按 `hourly[:48]` 现算。
-- **点位 → ta_id 映射**：`engineering_ta_map.json`（位于 `engineering/kml/`；可用 `--tamap` 指定）。**没有 ta_id 的点位会被跳过并打印清单**；若一个都没有则直接报错退出。取数走 jozzon-mcp，**不再有 Open-Meteo 配额 / 429 问题**。
+- **点位 → ta_id 映射**：`engineering_ta_map.json`（位于 `engineering/kml/`；由 `<SKILLS>/script/build_ta_maps.py` 生成；可用 `--tamap` 指定）。**没有 ta_id 的点位会被跳过并打印清单**；若一个都没有则直接报错退出。取数走 jozzon-mcp，**不再有 Open-Meteo 配额 / 429 问题**。
 
 ### 单点位增量重跑（2026-09-25 新增）
 
@@ -137,7 +137,7 @@ $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
 - 临时 md 必须原样保留原表头前 4 行（表头靠子串匹配 `点位`/`经度`/`纬度`），只替换数据行。
 - `render_points_html.py` **有** `--only <slug>`，只重渲染该点位的 HTML。
 - index 需**单独**重建（`weather-engineering-index` 的 `build_points_index.py`），渲染器不再顺带生成。
-- 只重跑一个点位会造成**窗口不一致**：该点 `meta.start_date` 是重跑当天，其余点位仍是上一次的（如 09-24 起）。如需全部对齐到同一窗口，跑全量 `beidou/engineering/script/rerun_engineering.py`（index 由 `weather-engineering-index` 生成 `engineering/html/index.html`，无独立顶层脚本）。
+- 只重跑一个点位会造成**窗口不一致**：该点 `meta.start_date` 是重跑当天，其余点位仍是上一次的（如 09-24 起）。如需全部对齐到同一窗口，跑全量 `<SKILLS>/script/rerun_engineering.py`（index 由 `weather-engineering-index` 生成 `engineering/html/index.html`，无独立顶层脚本）。
 - 取数前先 probe 配额（见运维要点），避免 429。
 
 ---
@@ -224,7 +224,7 @@ $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
 > 本技能不再包含 `gen_points_summary.py`，也不再生成 `index.html`。
 > 用法详见该技能的 SKILL.md。
 >
-> **自动化**：`beidou/engineering/script/rerun_engineering.py` 在「取数 → 渲染点位页」之后，会依次调用
+> **自动化**：`<SKILLS>/script/rerun_engineering.py` 在「取数 → 渲染点位页」之后，会依次调用
 > `weather-engineering-index` 的 `build_points_index.py` 与 `gen_points_summary.py`，
 > 生成 `engineering/html/index.html` 与 `engineering/fengxian_2tian_huizong.md`
 > （取数沿用默认起始 **下一整点起**、**14 天 / 未来 2 周窗口**；
@@ -249,7 +249,7 @@ $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
 ## 工作流（agent 执行步骤）
 
 **现行主链路（钻井点位看板，默认走这条）**：
-1. `beidou/engineering/script/rerun_engineering.py` 一条龙：读 `engineering/kml/all_points_info.md` → 按 `engineering_ta_map.json` **逐个 ta_id 调 jozzon-mcp 取数**写 `engineering/data/{拼音}.json` → `render_points_html.py` 渲染 `engineering/html/{拼音}.html` → 调 `weather-engineering-index` 建 `engineering/html/index.html` 并出 2 天风险 md。
+1. `<SKILLS>/script/rerun_engineering.py` 一条龙：读 `engineering/kml/all_points_info.md` → 按 `engineering_ta_map.json` **逐个 ta_id 调 jozzon-mcp 取数**写 `engineering/data/{拼音}.json` → `render_points_html.py` 渲染 `engineering/html/{拼音}.html` → 调 `weather-engineering-index` 建 `engineering/html/index.html` 并出 2 天风险 md。
 2. 只刷**单点**：用「临时 md」把点位缩到 1 个再跑 `build_points_data.py`，接着 `render_points_html.py --only <slug>`（详见上方《单点位增量重跑》）。
 3. 交付前校验：`check_rain_eng.py`（Python 规则回归）+ `check_rain_eng_page.js`（jsdom 页面级）；如需浏览器级再用 playwright 截图或物探侧 `validate.py`（**判据：无 JS 报错、无「⚠ 链路预览」合成数据提示条、`body.sevN` 正常**）。
    ⚠️ **旧 schema 的 json 会让 `sev_of` KeyError 崩**（缺 `daily[].rainfall`）——单点重渲染请把目标 json 单独放临时 datadir，别整个 datadir 一起渲。
