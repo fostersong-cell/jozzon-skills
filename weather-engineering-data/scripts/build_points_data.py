@@ -8,7 +8,7 @@ weather-engineering-data —— Markdown 点位表 → 逐点天气数据文件�
 输入：
   - all_points_info.md（点位 / 经度 / 纬度）
   - engineering_ta_map.json（位于 engineering/kml/；点位名 → 九章目标区 ta_id；含 all_points_info 全字段，
-    由用户侧在九章注册后回填 ta_id；兼容旧名 ta_map.json）
+    由用户侧在九章注册后回填 ta_id）
 动作：解析所有点位 → 按 ta_id 调 jozzon-mcp 拉「未来 2 周 / 14 天」逐小时天气
       → 为每个点位写出独立 JSON 数据文件（拼音文件名，与旧 *_data.json 同目录互不冲突）。
 要素（2026-10-16 新定）：
@@ -87,8 +87,8 @@ def parse_md_points(path):
 
 def load_ta_map(path):
     """返回 {点位名: ta_id}。兼容两种结构：
-    新：{"points":[{..., "点位": .., "ta_id": ..}, ...]}（engineering_ta_map.json）；
-    旧：{"井名": ta_id, ...}（ta_map.json）。缺失/无有效返回 {}。"""
+    新：{"points":[{..., "点位": .., "ta_id": ..}, ...]}；
+    旧（扁平 {"井名": ta_id} 字典）也兼容。缺失/无有效返回 {}。"""
     try:
         with open(path, "r", encoding="utf-8") as f:
             d = json.load(f)
@@ -122,7 +122,7 @@ def main():
     ap.add_argument("--datadir", default="engineering/data",
                     help="逐点 JSON 数据文件输出目录（默认 engineering/data）")
     ap.add_argument("--tamap", default=None,
-                    help="点位→ta_id 映射 json；默认 <datadir>/../engineering_ta_map.json（兼容旧名 ta_map.json）")
+                    help="点位→ta_id 映射 json；默认 <datadir>/../kml/engineering_ta_map.json")
     ap.add_argument("--name", default="钻井工程", help="区域/项目标签，写入 meta")
     ap.add_argument("--days", type=int, default=14, help="预报天数，默认 14（未来 2 周）")
     ap.add_argument("--from-today", action="store_true", help="从当前整点开始（默认从下一整点开始）")

@@ -3,7 +3,7 @@
 物探工区(区域)两周天气看板生成器 —— 富媒体交互式 HTML 版
 
 数据源（2026-10-16 起）:
-  - **作业点与取数一律走 jozzon-mcp（九章雷电网）目标区 ta_id**：读 `wutan/wutan_ta_map.json`
+  - **作业点与取数一律走 jozzon-mcp（九章雷电网）目标区 ta_id**：读 `wutan/kml/wutan_ta_map.json`
     本项目下的 `points[]`（name/lon/lat/ta_id），逐个 ta_id 调 `get_hourly_weather`。
   - **KML 只用于地图几何展示**（边框 Polygon / 测线 LineString / 采集点标记），不再用于采样或取数。
   - 未配置 ta_id 直接报错退出（不再回退到 Open-Meteo 网格采样）。
@@ -22,7 +22,7 @@
 用法:
   python build_dashboard.py --name "云南大关" --kml "工区.kml" --points "采集点.kml" \
       --outdir "wutan/html" --outfile "daguan-xiangmu-gongqu.html"
-  （须在 beidou 目录下运行，load_ta_map 才能找到 wutan/wutan_ta_map.json）
+  （须在 beidou 目录下运行，load_ta_map 才能找到 wutan/kml/wutan_ta_map.json）
 
 """
 import argparse, json, os, sys, time, base64, io, urllib.request, urllib.parse, math
@@ -547,7 +547,7 @@ else:
 
     # ---------- 2. 按目标区 ta_id 从 jozzon-mcp 批量取数 ----------
     # 数据源切换（2026-10-16）：Open-Meteo → jozzon-mcp（九章雷电网）。
-    # 作业点 = wutan/wutan_ta_map.json 里本项目注册的目标区（列表顺序对应作业点序号）；
+    # 作业点 = wutan/kml/wutan_ta_map.json 里本项目注册的目标区（列表顺序对应作业点序号）；
     # KML 仅用于地图几何展示（边框 / 测线），不再用于采样取数。
     ta_entries = load_ta_map(args.name)
     if ta_entries and all(e.get("ta_id") is not None for e in ta_entries):
@@ -559,7 +559,7 @@ else:
         ta_ids = [int(e["ta_id"]) for e in ta_entries]
     else:
         raise RuntimeError(
-            f"项目「{args.name}」未配置可用的 jozzon-mcp 目标区（wutan/wutan_ta_map.json 缺失或 ta_id 为 null）。"
+            f"项目「{args.name}」未配置可用的 jozzon-mcp 目标区（wutan/kml/wutan_ta_map.json 缺失或 ta_id 为 null）。"
             f"请先在九章注册目标区并填入 ta_id，再运行取数。")
     print(f"作业点(目标区): {len(samples)} （jozzon-mcp 取数）")
 

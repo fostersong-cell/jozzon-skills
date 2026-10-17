@@ -113,7 +113,7 @@ KML 自动判断类型：
   - `daily`：逐日 `tempMin/tempMax`、`rainfall`、`snowfall`、`ptype`、`windMax`、`gustMax`、`apparentMin/apparentMax`、`visMin`。
   - `summary`：`totalRainfall`、`maxGust`、`maxWind`、`minTemp`、`maxTemp`、`minApparent/maxApparent`、`minVis`、`maxRainfallDay`、以及小时级峰值 `pHourMax`/`snowHourMax`/`gustHourMax`（供 index / 汇总套用新分级阈值）。
   ⚠️ **`summary` 里的 maxGust/maxTemp/minTemp/pHourMax/snowHourMax 全是「整窗 14 天」值**，不能直接当「未来 48 小时」用——48h 峰值必须在消费侧按 `hourly[:48]` 现算。
-- **点位 → ta_id 映射**：`engineering_ta_map.json`（与 `engineering/data` 同级，旧名 `ta_map.json` 仍兼容；可用 `--tamap` 指定）。**没有 ta_id 的点位会被跳过并打印清单**；若一个都没有则直接报错退出。取数走 jozzon-mcp，**不再有 Open-Meteo 配额 / 429 问题**。
+- **点位 → ta_id 映射**：`engineering_ta_map.json`（位于 `engineering/kml/`；可用 `--tamap` 指定）。**没有 ta_id 的点位会被跳过并打印清单**；若一个都没有则直接报错退出。取数走 jozzon-mcp，**不再有 Open-Meteo 配额 / 429 问题**。
 
 ### 单点位增量重跑（2026-09-25 新增）
 
