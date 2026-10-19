@@ -5,8 +5,7 @@ SKILLS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VENV = os.path.expanduser("~/.workbuddy/binaries/python/envs/default/bin/python")
 BASE = os.environ.get("BEIDOU", "/Users/zhijunsong/Desktop/同步空间/jozzon/1.个人资料/AI/work/beidou")
 
-# 唯一数据源：all_points_info.md（2026-09-17 起不再使用任何 KML，如 all-wells-points.kml）
-MD = os.path.join(BASE, "engineering", "kml", "all_points_info.md")
+# 唯一数据源：engineering_ta_map.json（2026-10-19 起点位/经纬度/层级/ta_id 全在此；不再用 all_points_info.md 或任何 KML）
 
 # 技能脚本（2026-09-17 起：窗口改为未来 2 周 / 14 天，index 生成已拆出为独立技能）
 DATA_SKILL = os.path.join(SKILLS, "weather-engineering-data", "scripts", "build_points_data.py")
@@ -20,7 +19,7 @@ SUMMARY_OUT = os.path.join(BASE, "engineering", "script", "fengxian_2tian_huizon
 
 DAYS = "14"  # 未来 2 周
 
-print("===== 石油工程：从 all_points_info.md 取数(未来2周) + 渲染点位页 + 生成 index + 未来2天风险汇总（不使用 KML）=====", flush=True)
+print("===== 石油工程：从 engineering_ta_map.json 取数(未来2周) + 渲染点位页 + 生成 index + 未来2天风险汇总（不用 md/KML）=====", flush=True)
 
 
 def run(tag, cmd, timeout, fatal=True):
@@ -37,9 +36,9 @@ def run(tag, cmd, timeout, fatal=True):
     return True
 
 
-# 1) 取数：解析 md 中 17 个管线/平台点位，向 Open-Meteo 取逐小时预报
-#    （默认从明天 0 时起，未来 2 周 / 14 天窗口）
-run("取数", [VENV, DATA_SKILL, "--md", MD, "--datadir", DATA, "--days", DAYS], timeout=540)
+# 1) 取数：从 engineering_ta_map.json 读取 17 个管线/平台点位，按 ta_id 向 jozzon-mcp 取逐小时预报
+#    （默认从下一整点起，未来 2 周 / 14 天窗口）
+run("取数", [VENV, DATA_SKILL, "--datadir", DATA, "--days", DAYS], timeout=540)
 
 # 2) 渲染：17 点位 HTML（不再顺带生成 index）
 run("渲染点位页", [VENV, RENDER_SKILL, "--datadir", DATA, "--htmldir", HTML], timeout=300)
@@ -53,4 +52,4 @@ run("未来2天风险汇总",
     timeout=120, fatal=False)
 
 print("✅ 石油工程：17 点位【数据(未来2周) + 点位页 + index(含未来2天风险) + 未来2天风险汇总】"
-      "已从 all_points_info.md 重跑完成（全程未使用 KML）")
+      "已从 engineering_ta_map.json 重跑完成（全程未使用 md/KML）")
