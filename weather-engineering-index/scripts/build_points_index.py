@@ -235,12 +235,14 @@ def near_term_html(rows, w0="", w1=""):
     body = []
     for r in rows:
         col = "#C0392B" if r["lv"] >= 3 else "#E0822C"
-        names = "、".join(r["names"])
+        shown = "、".join(
+            f'<a class="elink" href="{f}?from=index">{n}</a>' for n, f in r["names"]
+        )
         if r["more"]:
-            names += f" 等 {len(r['names']) + r['more']} 口井"
+            shown += f" 等 {len(r['names']) + r['more']} 口井"
         body.append('<div class="elrow">'
                     f'<span class="elk" style="background:{col}">{r["name"]} · {r["head"]}</span>'
-                    f'<span class="elp">{names}</span></div>')
+                    f'<span class="elp">{shown}</span></div>')
     return '<div class="near">' + head + "".join(body) + '</div>'
 
 
@@ -280,6 +282,8 @@ def render_index(groups, counts, start_label, end_label=None, near_html=None, nd
 .near .elk {flex:0 0 auto; display:inline-block; font-size:11px; font-weight:700; color:#fff;
   border-radius:6px; padding:1.5px 7px; white-space:nowrap; letter-spacing:.2px;}
 .near .elp {flex:1 1 auto; min-width:0; font-size:12.5px; line-height:1.5; color:#33414f; overflow-wrap:anywhere;}
+.near .elp a.elink {color:#2E7DA8; text-decoration:none; font-weight:600;}
+.near .elp a.elink:hover {text-decoration:underline;}
 """ + hero_css() + """</style></head><body>""")
     parts.append('<div class="heroarea">')
     parts.append('<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">'
@@ -409,7 +413,7 @@ def main():
         cum2 = cum48  # 48h 累计（hourly[:48] 累加），与卡片焦点文案、评级、汇总表完全同源
         pk2 = max(daily2, key=lambda x: x.get("rainfall", 0)) if daily2 else {"rainfall": 0, "date": ""}
         summary_pts.append({
-            "name": m["name"], "gq": gongqu(m["name"]),
+            "name": m["name"], "gq": gongqu(m["name"]), "file": slug + ".html",
             "cum": round(cum2, 1), "pkp": round(pk2.get("rainfall", 0), 1), "pkdate": pk2.get("date"),
             "snow48": round(snow48, 1),
             # 风/温也统一取 48h 逐小时窗口极值（与卡片焦点、评级、项目页同源）

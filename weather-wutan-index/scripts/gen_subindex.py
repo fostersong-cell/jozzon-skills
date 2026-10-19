@@ -316,7 +316,7 @@ def build_near_term_desc(rows, wd=NEAR_DAYS):
                 LOW.append(kind)
                 continue
             g = groups.setdefault((kind, lv), {"lbl": lbl, "projs": []})
-            g["projs"].append(r["name"])
+            g["projs"].append((r["name"], r["short"]))
     if not groups:
         # 无 2 级及以上要素：只表达「天气平稳」，不罗列否定式描述
         tail = ("各项目以小雨、五级风等弱天气为主，无明显强降雨与大风，整体适宜作业"
@@ -326,8 +326,10 @@ def build_near_term_desc(rows, wd=NEAR_DAYS):
     ordered = sorted(groups.items(), key=lambda kv: (-kv[0][1], _ELEM_ORDER[kv[0][0]]))
     lines = []
     for (kind, lv), g in ordered:
-        names = list(dict.fromkeys(g["projs"]))
-        shown = "、".join(names[:8]) + (f" 等 {len(names)} 个" if len(names) > 8 else "")
+        items = list(dict.fromkeys(g["projs"]))   # [(name, short), ...]
+        shown = "、".join(
+            f'<a class="elink" href="{s}.html?from=index">{n}</a>' for n, s in items[:8]
+        ) + (f" 等 {len(items)} 个" if len(items) > 8 else "")
         col = _EL_COLOR.get(min(lv, 3), "#9AA0A6")
         lines.append(
             '<div class="elrow">'
@@ -688,6 +690,8 @@ def page(title, sub_title, label, rows, out_path):
   .elk{{flex:0 0 auto;display:inline-block;font-size:11.5px;font-weight:700;color:#fff;
     border-radius:6px;padding:1.5px 7px;white-space:nowrap;letter-spacing:.2px;}}
   .elp{{flex:1 1 auto;min-width:0;font-size:12.5px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere;}}
+  .elp a.elink{{color:var(--accent);text-decoration:none;font-weight:600;}}
+  .elp a.elink:hover{{text-decoration:underline;}}
   .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-top:8px;}}
   a.card{{
     display:block;text-decoration:none;color:inherit;background:var(--card);border:1px solid var(--line);

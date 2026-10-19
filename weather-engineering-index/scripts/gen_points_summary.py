@@ -237,13 +237,13 @@ def overview_elems(pts, max_show=8):
                 continue
             if kind == "snow" and (p.get("snow48") or 0) <= 0:
                 continue
-            buckets.setdefault((kind, lv), []).append((val, p.get("name") or ""))
+            buckets.setdefault((kind, lv), []).append((val, p.get("name") or "", p.get("file") or ""))
     if not buckets:
         return []
     rows = []
     for kind, lv in sorted(buckets, key=lambda k: (-k[1], _ELEM_ORDER.get(k[0], 9))):
         rows_ = sorted(buckets[(kind, lv)], key=lambda x: -x[0])
-        names = list(dict.fromkeys(n for _v, n in rows_ if n))
+        names = list(dict.fromkeys((n, f) for _v, n, f in rows_ if n))
         rows.append({"kind": kind, "lv": lv, "name": _ELEM_DISP.get(kind, kind),
                      "head": elem_chip(kind, lv),
                      "names": names[:max_show], "more": max(0, len(names) - max_show)})
