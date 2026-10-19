@@ -9,7 +9,7 @@ Thumbs.db
 desktop.ini
 
 # ⚠️ 凭据文件，绝不入库
-# jozzon-mcp-token-refresh/config.json 存 leidian.wang 登录口令；
+# weather-common/config.json 存 leidian.wang 登录口令（token 自动刷新用，2026-10-19 起）；
 # sync-and-push.sh 的 `git add -A` 会把它一并提交并 push 到 GitHub，故在此拦截。
 config.json
 

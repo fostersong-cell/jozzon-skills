@@ -14,6 +14,15 @@ jozzon-mcp 是 MCP 工具，按「目标区 ta_id」拉逐小时天气，不是 
   - fetch_hourly(ta_id)   单个目标区逐小时天气（get_hourly_weather）
   - fetch_region(ta_ids)  批量（多目标区）
 
+token 自动维护（2026-10-19 起；原独立 skill jozzon-mcp-token-refresh 已并入本模块并删除）
+--------------------------------------------------------------------------------
+mcp.json 里的 JWT 约 10 小时过期，过期后 MCP 调用 401 / 后端拒绝。
+  - ensure_token()        取数前自检：过期（或剩余 < REFRESH_MARGIN=15min）时无头登录
+                          https://leidian.wang 取新 access 写回 mcp.json；未过期直接放行。
+                          两个取数 skill（weather-wutan-html / weather-engineering-data）
+                          在主流程最前面调用。凭据：weather-common/config.json（600，git 忽略）。
+  - token_info()          解码当前 token 的 exp / 剩余时长（只读，不刷新）。
+
 要素与口径（2026-10-16 用户新定）
 -------------------------------
   降雨 rainfall  = rain + showers 合并（mm/h）
@@ -47,9 +56,20 @@ jozzon-mcp 是 MCP 工具，按「目标区 ta_id」拉逐小时天气，不是 
 import os
 import sys
 import json
+import re
+import glob
+import shutil
+import base64
+import tempfile
+import subprocess
 import urllib.request
 import urllib.error
 import time
+
+try:
+    import fcntl                      # POSIX 文件锁（并行刷新去重）；Windows 缺席时退化为无锁
+except ImportError:
+    fcntl = None
 
 # ===========================================================================
 # 0. 路径与 token
@@ -80,6 +100,210 @@ def get_token():
     except Exception:
         pass
     raise RuntimeError("未找到 jozzon-mcp token：请设置 JOZZON_MCP_TOKEN 或检查 mcp.json")
+
+# ===========================================================================
+# 0.x token 过期自检 + 自动刷新（2026-10-19 由独立 skill jozzon-mcp-token-refresh 并入）
+# ---------------------------------------------------------------------------
+# mcp.json 的 JWT 约 10 小时过期；过期后 MCP 调用 401 / 后端拒绝。
+# ensure_token()：解码 exp 检查有效期，过期（或剩余不足 REFRESH_MARGIN）时
+# 无头登录 https://leidian.wang 取新 access 写回 mcp.json；未过期直接放行。
+# 两个取数 skill 在主流程最前面调用；刷新失败返回 False，调用方应终止
+# （避免带着坏 token 取数，把后端故障误报成「200 非 JSON」类灵异问题）。
+# 凭据文件搜索顺序：env JOZZON_REFRESH_CONFIG > weather-common/config.json
+#   > 旧 skill 路径（兼容过渡）。config.json 权限须 600，且已被 .gitignore 拦截。
+# ===========================================================================
+REFRESH_MARGIN = int(os.environ.get("JOZZON_TOKEN_MARGIN", "900"))   # 剩余 <15min 即主动刷新
+LEIDIAN_URL = "https://leidian.wang"
+_LOCK_PATH = os.path.join(tempfile.gettempdir(), "jozzon_token_refresh.lock")
+
+def _credentials_path():
+    """定位 leidian.wang 登录凭据 config.json。"""
+    cands = []
+    if os.environ.get("JOZZON_REFRESH_CONFIG"):
+        cands.append(os.environ["JOZZON_REFRESH_CONFIG"])
+    cands.append(os.path.join(os.path.dirname(_HERE), "config.json"))   # weather-common/config.json
+    cands.append(os.path.expanduser("~/.workbuddy/skills/jozzon/jozzon-mcp-token-refresh/config.json"))
+    for p in cands:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+def _b64url_json(seg):
+    seg += "=" * (-len(seg) % 4)
+    return json.loads(base64.urlsafe_b64decode(seg))
+
+def token_info():
+    """解码当前 token 的 exp。返回 {ok, exp, remain, detail}；解析失败 ok=False（只读）。"""
+    try:
+        tok = get_token()
+    except Exception as e:
+        return {"ok": False, "exp": None, "remain": None, "detail": str(e)}
+    try:
+        payload = tok.split(" ", 1)[-1].split(".")[1]
+        exp = int(_b64url_json(payload)["exp"])
+        return {"ok": True, "exp": exp, "remain": exp - int(time.time()),
+                "detail": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp))}
+    except Exception as e:
+        return {"ok": False, "exp": None, "remain": None, "detail": f"token 解析失败: {e}"}
+
+def _fmt_remain(remain):
+    return f"{remain // 3600} 小时 {remain % 3600 // 60} 分"
+
+def _find_agent_browser():
+    """定位 agent-browser CLI：PATH → 各候选 root 的 node workspace / versions bin。
+    候选 root：env WB_HOME 与 $HOME/.workbuddy（两者语义不同都试，取到即用）。"""
+    p = shutil.which("agent-browser")
+    if p:
+        return p
+    roots = []
+    if os.environ.get("WB_HOME"):
+        roots.append(os.environ["WB_HOME"])
+    roots.append(os.path.join(os.path.expanduser("~"), ".workbuddy"))
+    for root in roots:
+        ws = os.path.join(root, "binaries", "node", "workspace",
+                          "node_modules", ".bin", "agent-browser")
+        if os.path.exists(ws):
+            return ws
+        vers = sorted(glob.glob(os.path.join(
+            root, "binaries", "node", "versions", "*", "bin", "agent-browser")), reverse=True)
+        if vers:
+            return vers[0]
+    return None
+
+def _ensure_agent_browser():
+    """找到 agent-browser；缺失则尝试在托管 node workspace 安装（需 npm）。"""
+    ab = _find_agent_browser()
+    if ab:
+        return ab
+    ws = os.path.join(os.path.expanduser("~"), ".workbuddy", "binaries", "node", "workspace")
+    npm = shutil.which("npm")
+    if not npm:
+        for cand in sorted(glob.glob(os.path.join(
+                os.path.expanduser("~"), ".workbuddy", "binaries", "node", "versions", "*", "bin", "npm")),
+                reverse=True):
+            if os.path.exists(cand):
+                npm = cand
+                break
+    if npm and os.path.isdir(ws):
+        try:
+            subprocess.run([npm, "install", "agent-browser"], cwd=ws,
+                           capture_output=True, text=True, timeout=600)
+            binp = os.path.join(ws, "node_modules", ".bin", "agent-browser")
+            if os.path.exists(binp):
+                subprocess.run([binp, "install"], capture_output=True, text=True, timeout=600)
+                return binp
+        except Exception as e:
+            raise RuntimeError(f"agent-browser 自动安装失败: {e}")
+    raise RuntimeError("未找到 agent-browser，且无法自动安装（需 npm 与 node workspace）")
+
+def _ab_run(ab, args, timeout=120):
+    """跑一条 agent-browser 命令（LC_ALL=C 稳定输出解析）。"""
+    env = dict(os.environ)
+    env["LC_ALL"] = "C"
+    return subprocess.run([ab] + args, capture_output=True, text=True,
+                          timeout=timeout, env=env)
+
+def _write_token(tok):
+    """把新 token 写回 mcp.json（仅改 jozzon-mcp 的 Authorization，其余原样保留），并校验 exp。"""
+    path = _mcp_json_path()
+    with open(path, "r", encoding="utf-8") as f:
+        d = json.load(f)
+    d.setdefault("mcpServers", {}).setdefault("jozzon-mcp", {}) \
+        .setdefault("headers", {})["Authorization"] = "Bearer " + tok
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    info = token_info()
+    if not info["ok"] or info["remain"] <= 0:
+        raise RuntimeError("新 token 写入后校验失败（仍过期或解析失败）")
+    return info
+
+def _refresh_via_browser(verbose=True):
+    """无头登录 leidian.wang → 读 localStorage.access → 写回 mcp.json。返回新 token_info。"""
+    ab = _ensure_agent_browser()
+    cred = _credentials_path()
+    if not cred:
+        raise RuntimeError("未找到刷新凭据 config.json（weather-common/config.json 或 env JOZZON_REFRESH_CONFIG）")
+    with open(cred, encoding="utf-8") as f:
+        c = json.load(f)
+    user, pw = c.get("username"), c.get("password")
+    if not user or not pw:
+        raise RuntimeError(f"凭据文件缺少 username/password: {cred}")
+    try:
+        _ab_run(ab, ["open", LEIDIAN_URL], timeout=120)
+        _ab_run(ab, ["wait", "--load", "load"], timeout=120)
+        snap = _ab_run(ab, ["snapshot", "-i"], timeout=60)
+        out = snap.stdout or ""
+        tbs = re.findall(r"textbox [^\[]*\[ref=([a-z0-9]+)\]", out)
+        bts = re.findall(r"button [^\[]*\[ref=([a-z0-9]+)\]", out)
+        if tbs and bts:
+            if verbose:
+                print("  [token-refresh] 检测到登录页，填写凭据并登录…")
+            _ab_run(ab, ["type", tbs[0], user], timeout=60)
+            if len(tbs) > 1:
+                _ab_run(ab, ["type", tbs[1], pw], timeout=60)
+            _ab_run(ab, ["click", bts[0]], timeout=60)
+            _ab_run(ab, ["wait", "--load", "load"], timeout=120)
+        tok = ""
+        for _ in range(5):
+            raw = _ab_run(ab, ["eval", "localStorage.getItem('access')"], timeout=60)
+            m = re.search(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", raw.stdout or "")
+            if m:
+                tok = m.group(0)
+                break
+            time.sleep(2)
+        if not tok:
+            raise RuntimeError("未能从 localStorage 取到有效 access token")
+        return _write_token(tok)
+    finally:
+        try:
+            _ab_run(ab, ["close"], timeout=30)
+        except Exception:
+            pass
+
+def ensure_token(force=False, margin=None, verbose=True):
+    """取数前 token 自检 + 按需刷新。返回 True=token 可用；失败返回 False（调用方应终止）。
+    force=True 无视有效期强制刷新。并行流水线用文件锁去重（只刷新一次，其余复检放行）。"""
+    margin = REFRESH_MARGIN if margin is None else margin
+    info = token_info()
+    if info["ok"] and info["remain"] > margin and not force:
+        if verbose:
+            print(f"[jozzon-mcp] token 有效（至 {info['detail']}，剩余 {_fmt_remain(info['remain'])}），无需刷新")
+        return True
+    if force:
+        why = "强制刷新"
+    elif info["ok"] and info["remain"] <= 0:
+        why = "token 已过期"
+    elif info["ok"]:
+        why = f"token 即将过期（剩余 {_fmt_remain(info['remain'])}）"
+    else:
+        why = info["detail"]
+    if verbose:
+        print(f"[jozzon-mcp] {why}，开始自动刷新 token…")
+    lockf = None
+    try:
+        if fcntl is not None:
+            lockf = open(_LOCK_PATH, "w")
+            fcntl.flock(lockf, fcntl.LOCK_EX)     # 等锁期间可能已被其它进程刷新
+            info2 = token_info()
+            if info2["ok"] and info2["remain"] > margin and not force:
+                if verbose:
+                    print(f"[jozzon-mcp] 其它进程已刷新，token 有效（至 {info2['detail']}）")
+                return True
+        info = _refresh_via_browser(verbose=verbose)
+        if verbose:
+            print(f"[jozzon-mcp] token 刷新成功（至 {info['detail']}，剩余 {_fmt_remain(info['remain'])}）")
+        return True
+    except Exception as e:
+        print(f"[jozzon-mcp] token 刷新失败: {e}")
+        return False
+    finally:
+        if lockf is not None:
+            try:
+                fcntl.flock(lockf, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            lockf.close()
 
 # ===========================================================================
 # 1. MCP JSON-RPC 客户端（Streamable HTTP）
@@ -588,7 +812,12 @@ def sev_from_levels(lv):
 # ===========================================================================
 def selfcheck():
     print("== jozzonwx selfcheck ==")
-    print("token:", "OK" if get_token() else "MISSING")
+    info = token_info()
+    if info["ok"]:
+        print(f"token: OK（exp(北京时间)= {info['detail']}，剩余 {_fmt_remain(info['remain'])}）")
+    else:
+        print("token: 不可用 -", info["detail"])
+        print("提示：运行 `python jozzonwx.py ensure-token` 可自动刷新")
     try:
         ms = list_metrics()
         print(f"可用要素数: {len(ms)}")
@@ -606,7 +835,18 @@ def selfcheck():
         print("resolve_codes 失败:", repr(e))
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "selfcheck":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "selfcheck":
         selfcheck()
+    elif cmd == "token-status":
+        info = token_info()
+        if info["ok"]:
+            print(f"token exp(北京时间)= {info['detail']}  剩余= {_fmt_remain(info['remain'])}  "
+                  f"有效= {'YES' if info['remain'] > 0 else 'NO'}")
+            sys.exit(0 if info["remain"] > 0 else 2)
+        print("token 不可用:", info["detail"])
+        sys.exit(2)
+    elif cmd == "ensure-token":
+        sys.exit(0 if ensure_token(force="--force" in sys.argv[2:]) else 1)
     else:
-        print("用法: python jozzonwx.py selfcheck")
+        print("用法: python jozzonwx.py selfcheck | token-status | ensure-token [--force]")

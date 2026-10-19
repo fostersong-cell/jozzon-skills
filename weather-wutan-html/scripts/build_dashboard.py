@@ -212,6 +212,13 @@ ap.add_argument("--no-save-data", dest="save_data", action="store_false",
                 help="关闭自动保存 _data.json")
 args = ap.parse_args()
 
+# 2026-10-19：取数前自检 jozzon-mcp token —— 过期（或剩余不足 15 分钟）自动无头刷新
+# （刷新逻辑内置于 weather-common/jozzonwx.py，原 jozzon-mcp-token-refresh skill 已废弃删除）。
+# 刷新失败直接终止，避免带着坏 token 取数、把后端 401 误报成灵异故障。
+if not JW.ensure_token():
+    print("ERROR: jozzon-mcp token 不可用（自动刷新失败），终止。请检查网络与凭据后重试。")
+    sys.exit(1)
+
 _now = datetime.now()
 today = _now.strftime("%Y-%m-%d")
 # 取数窗口起点：默认从「下一整点」开始（跳过当前小时剩余分钟）；
