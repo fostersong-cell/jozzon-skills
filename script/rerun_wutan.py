@@ -16,7 +16,7 @@ projs = [
     ("通江三维", "tongjiang-sanwei-gongqu", "tongjiang-sanwei-gongqu.kml", "tongjiang-sanwei-gongqu_points.kml"),
     ("南郑三维", "nanzhengsanwei-gongqu", "nanzhengsanwei-gongqu.kml", "nanzhengsanwei-gongqu_points.kml"),
     ("藏北天山", "cangbeitianshan-cesian", "cangbeitianshan-cesian.kml", "cangbeitianshan-cesian_points.kml"),
-    ("广东广西深反射", "guangdongguangxi-shenfanshe-cesian", "guangdongguangxi-shenfanshe-cesian.kml", "guangdongguangxi-shenfanshe-cesian-points.kml"),
+    # 2026-10-19：广东广西深反射项目已结束，从物探移除
     ("资阳三维", "ziyang-sanwei-gongqu", "ziyang-sanwei-gongqu.kml", "ziyang-sanwei-gongqu-points.kml"),
     ("华亭静宁二维", "huatingjingan-gongqu", "huatingjingan-gongqu.kml", "huatingjingan-gongqu-points.kml"),
     ("宁蒗-万马场二维", "ninglangwanmachang-gongqu", "ninglangwanmachang-gongqu.kml", "ninglangwanmachang-gongqu-points.kml"),

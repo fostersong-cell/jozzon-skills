@@ -4,7 +4,7 @@
 gen_points_summary.py —— 石油工程点位「未来 2 天（48小时）风险汇总」叙事生成器
 ========================================================================
 读取 engineering/data 下所有 meta.kind=="point" 的 JSON（由 build_points_data.py
-从 all_points_info.md 生成），按未来 2 天（daily[:2]，即 48 小时）聚合，自动产出一段
+从 engineering_ta_map.json 生成），按未来 2 天（daily[:2]，即 48 小时）聚合，自动产出一段
 约 50 字、平实口吻的「未来 2 天风险」短描述（不罗列等级，与人工口径一致，可一键复制到汇报）。
 
 字段约定（与 build_points_data.py 输出一致）：
@@ -596,7 +596,7 @@ def main():
     block = f"""# 石油工程点位 · 未来{args.days}天风险概要
 
 > 数据窗口：{start} 起未来 {args.days} 天（Asia/Shanghai）｜生成时间：{now}
-> 数据源：engineering/kml/all_points_info.md → jozzon-mcp（九章雷电网）
+> 数据源：engineering/kml/engineering_ta_map.json → jozzon-mcp（九章雷电网）
 
 {short}
 

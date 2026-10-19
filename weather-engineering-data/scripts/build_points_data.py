@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-weather-engineering-data —— Markdown 点位表 → 逐点天气数据文件（未来 2 周 / 14 天）
+weather-engineering-data —— 点位表(engineering_ta_map.json) → 逐点天气数据文件（未来 2 周 / 14 天）
 =================================================================================
 2026-10-16 改造：取数源由 Open-Meteo 改为 jozzon-mcp（九章雷电网），按目标区 ta_id 取数。
+2026-10-19 改造：点位唯一来源由 all_points_info.md 改为 engineering_ta_map.json
+              （该文件已含全部点位字段 + ta_id，KML/md 目录内容整体收敛到 ta_map）。
 
 输入：
-  - all_points_info.md（点位 / 经度 / 纬度）
-  - engineering_ta_map.json（位于 engineering/kml/；点位名 → 九章目标区 ta_id；含 all_points_info 全字段，
-    由用户侧在九章注册后回填 ta_id）
+  - engineering_ta_map.json（位于 engineering/kml/；每项含 一级/二级/三级/点位/经度/纬度/ta_id，
+    由用户侧在九章注册目标区后回填 ta_id）
 动作：解析所有点位 → 按 ta_id 调 jozzon-mcp 拉「未来 2 周 / 14 天」逐小时天气
       → 为每个点位写出独立 JSON 数据文件（拼音文件名，与旧 *_data.json 同目录互不冲突）。
 要素（2026-10-16 新定）：
@@ -104,6 +105,31 @@ def load_ta_map(path):
         return out
     return {k: v for k, v in d.items() if not k.startswith("_")}
 
+def parse_ta_map_points(path):
+    """从 engineering_ta_map.json 读取点位（2026-10-19：取代 all_points_info.md）。
+    每项含 一级/二级/三级/点位/经度/纬度/ta_id。
+    返回 [{name, lon, lat, level1, level2, level3, ta_id}, ...]。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception as e:
+        print(f"  ⚠️ ta_map 读取失败: {repr(e)}")
+        return []
+    rows = []
+    if isinstance(d, dict) and isinstance(d.get("points"), list):
+        for e in d["points"]:
+            nm = e.get("点位") or e.get("name")
+            if not nm:
+                continue
+            try:
+                lon = float(e["lon"]); lat = float(e["lat"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            rows.append({"name": nm, "lon": lon, "lat": lat,
+                         "level1": e.get("一级", ""), "level2": e.get("二级", ""), "level3": e.get("三级", ""),
+                         "ta_id": e.get("ta_id")})
+    return rows
+
 # ---------- 降水类型码（0无/1降雨/2降雪/3雨夹雪）----------
 def ptype_of(rainfall, snowfall, temp=None):
     has_l, has_s = rainfall > 0.05, snowfall > 0.01
@@ -117,8 +143,8 @@ def ptype_of(rainfall, snowfall, temp=None):
 # ---------- 主流程 ----------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--md", default="engineering/kml/all_points_info.md",
-                    help="点位汇总 Markdown 表路径（含 点位/经度/纬度 列）")
+    ap.add_argument("--md", default=None,
+                    help="[已废弃] 点位汇总 Markdown 表路径；点位现由 --tamap(engineering_ta_map.json) 提供")
     ap.add_argument("--datadir", default="engineering/data",
                     help="逐点 JSON 数据文件输出目录（默认 engineering/data）")
     ap.add_argument("--tamap", default=None,
@@ -133,27 +159,20 @@ def main():
         base = os.path.dirname(os.path.abspath(args.datadir))
         args.tamap = os.path.join(base, "kml", "engineering_ta_map.json")   # ta_map 已移至 kml/
 
-    if not os.path.exists(args.md):
-        print(f"ERROR: Markdown 文件不存在: {args.md}")
-        sys.exit(1)
-
-    points = parse_md_points(args.md)
+    # 2026-10-19：点位（名称/经纬度/层级）与 ta_id 一律来自 engineering_ta_map.json
+    points = parse_ta_map_points(args.tamap)
     if not points:
-        print("ERROR: 未能从 Markdown 解析出任何点位。")
+        print(f"ERROR: 未能从 ta_map 解析出任何点位: {args.tamap}")
         sys.exit(1)
-    print(f"解析到点位 {len(points)} 个，来源: {args.md}")
-
-    ta_map = load_ta_map(args.tamap)
-    print(f"ta_map: {len(ta_map)} 条映射，来自 {args.tamap}")
+    print(f"解析到点位 {len(points)} 个，来源: {args.tamap}")
 
     # 仅处理有 ta_id 的点位（jozzon-mcp 按目标区取数）
     ready, skipped = [], []
     for p in points:
-        tid = ta_map.get(p["name"])
-        if tid is None:
+        if p["ta_id"] is None:
             skipped.append(p["name"])
             continue
-        p2 = dict(p); p2["ta_id"] = int(tid)
+        p2 = dict(p); p2["ta_id"] = int(p["ta_id"])
         ready.append(p2)
     if skipped:
         print(f"  跳过（无 ta_id，待九章注册后填 ta_map）: {', '.join(skipped)}")
@@ -258,7 +277,7 @@ def main():
                 "level1": p["level1"], "level2": p["level2"], "level3": p["level3"],
                 "lat": p["lat"], "lon": p["lon"],
                 "region": args.name,
-                "source": os.path.basename(args.md),
+                "source": os.path.basename(args.tamap),
                 "generated_at": generated,
                 "timezone": args.timezone,
                 "start_date": start_date, "end_date": end_date,

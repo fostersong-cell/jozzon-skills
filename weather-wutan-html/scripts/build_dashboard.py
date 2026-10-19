@@ -2,14 +2,14 @@
 """
 物探工区(区域)两周天气看板生成器 —— 富媒体交互式 HTML 版
 
-数据源（2026-10-16 起）:
-  - **作业点与取数一律走 jozzon-mcp（九章雷电网）目标区 ta_id**：读 `wutan/kml/wutan_ta_map.json`
-    本项目下的 `points[]`（name/lon/lat/ta_id），逐个 ta_id 调 `get_hourly_weather`。
-  - **KML 只用于地图几何展示**（边框 Polygon / 测线 LineString / 采集点标记），不再用于采样或取数。
+数据源（2026-10-16 起几何与取数均来自 ta_map；2026-10-19 起 KML 整体废弃）:
+  - **唯一输入：`wutan/kml/wutan_ta_map.json`**（本项目条目含 `points[]` name/lon/lat/ta_id、
+    `lines[]` 测线、`polygons[]` 工区边界）。几何与目标区 ta_id 全部由它提供，不再读取任何 KML。
+  - **取数走 jozzon-mcp（九章雷电网）目标区 ta_id**：逐个 ta_id 调 `get_hourly_weather`。
   - 未配置 ta_id 直接报错退出（不再回退到 Open-Meteo 网格采样）。
 
 能力:
-  - 输入 KML 边框(工区多边形 / 测线 LineString)，自动识别类型，渲染为地图几何
+  - 从 ta_map 读取工区多边形 / 测线 / 作业点，自动识别类型，渲染为地图几何
   - 逐作业点取未来两周（14 天 / 336 小时）逐小时预报，并按「区域最坏情况包络」聚合
     (逐时最低温 / 最高降水 / 最大风 / 最大阵风)，同时为每个点算逐日序列供交互查询
   - 富媒体交互式 HTML：在线地形瓦片底图 + SVG 矢量覆盖层（边框/测线/作业点/风险区/比例尺/指北针）
@@ -20,9 +20,8 @@
   - 仅输出可交互 HTML（无 PDF 依赖），中文字体子集内嵌，手机/浏览器直接打开
 
 用法:
-  python build_dashboard.py --name "云南大关" --kml "工区.kml" --points "采集点.kml" \
-      --outdir "wutan/html" --outfile "daguan-xiangmu-gongqu.html"
-  （须在 beidou 目录下运行，load_ta_map 才能找到 wutan/kml/wutan_ta_map.json）
+  python build_dashboard.py --name "云南大关" --outdir "wutan/html" --outfile "daguan-xiangmu-gongqu.html"
+  （ta_map 定位：env WUTAN_TA_MAP 或 在 beidou 目录下运行，即 cwd/wutan/kml/wutan_ta_map.json）
 
 """
 import argparse, json, os, sys, time, base64, io, urllib.request, urllib.parse, math
@@ -70,6 +69,26 @@ def load_ta_map(name):
             except Exception as e:
                 print("  ⚠️ ta_map 读取失败:", repr(e))
     return []
+
+def load_ta_map_full(name):
+    """读取 wutan/kml/wutan_ta_map.json 中本项目完整条目 {points, lines, polygons}。
+    2026-10-19：工区几何（边界/测线/作业点）改由本函数提供，整体取代原 KML 解析。
+    返回 dict；未配置 / 文件缺失返回 None。"""
+    cand = []
+    if os.environ.get("WUTAN_TA_MAP"):
+        cand.append(os.environ["WUTAN_TA_MAP"])
+    cand.append(os.path.join(os.getcwd(), "wutan", "kml", "wutan_ta_map.json"))
+    for p in cand:
+        if os.path.exists(p):
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    m = json.load(fh)
+                val = m.get(name)
+                if isinstance(val, dict):
+                    return val
+            except Exception as e:
+                print("  ⚠️ ta_map 读取失败:", repr(e))
+    return None
 
 # ======================================================================
 # 实时数据采集总开关（TEMPORARY TOGGLE）
@@ -217,61 +236,31 @@ else:
     if not FETCH_ENABLED:
         print("⚠️ 实时数据采集已暂时关闭（脚本顶部 FETCH_ENABLED = False）。")
         print("   • 离线重渲染：用 --data <已抓取DATA.json> 读取历史数据直接出图。")
-        print("   • 恢复实时取数：将脚本顶部 FETCH_ENABLED 改回 True 后，再用 --kml 运行。")
+        print("   • 恢复实时取数：将脚本顶部 FETCH_ENABLED 改回 True 后运行（ta_map 驱动，无需 KML）。")
         sys.exit(0)
-    # ---------- 1. 解析 KML（支持 Polygon 边框 / LineString 测线） ----------
-    KNS = "{http://www.opengis.net/kml/2.2}"
-    tree = ET.parse(args.kml); root = tree.getroot()
-    poly = []; line = []; line_name = ""
-    lines = []   # 多线支持：每条 LineString 独立 {name, coords}
-    for pm in root.iter(KNS + "Polygon"):
-        ring = pm.find(KNS + "outerBoundaryIs/" + KNS + "LinearRing")
-        txt = ring.find(KNS + "coordinates").text.strip()
-        for part in txt.split():
-            lon, lat, *_ = part.split(",")
-            poly.append((float(lon), float(lat)))
-    if poly:
-        if poly[0] != poly[-1]:
+    # ---------- 1. 从 ta_map 获取几何（多边形/测线/作业点）----------
+    # 2026-10-19：KML 已整体废弃。工区边界(Polygon)/测线(LineString)/作业点(Point) 的
+    # 几何与坐标一律来自 wutan/kml/wutan_ta_map.json（由 KML 迁移生成，坐标一致）。
+    tmap = load_ta_map_full(args.name)
+    if not tmap:
+        raise RuntimeError(
+            f"项目「{args.name}」未在 wutan/kml/wutan_ta_map.json 中配置几何（缺失或为空）。"
+            f"请确认 ta_map 含该项目（points/lines/polygons）。")
+    poly = []   # 工区多边形（每项目至多 1 个，取第一个）
+    _polys = tmap.get("polygons") or []
+    if _polys:
+        _pc = _polys[0].get("coordinates") or []
+        poly = [(float(c[0]), float(c[1])) for c in _pc]
+        if poly and poly[0] != poly[-1]:
             poly.append(poly[0])
-        print(f"KML 多边形顶点数: {len(poly)-1}")
-    for pm in root.iter(KNS + "Placemark"):
-        ls = pm.find(KNS + "LineString")
-        if ls is None:
-            continue
-        nm = pm.find(KNS + "name")
-        nmval = nm.text.strip() if (nm is not None and nm.text) else ""
-        coords = []
-        txt = ls.find(KNS + "coordinates").text.strip()
-        for part in txt.split():
-            lon, lat, *_ = part.split(",")
-            coords.append((float(lon), float(lat)))
-        lines.append({"name": nmval, "coords": coords})
-        print(f"KML 线要素顶点数: {len(coords)} 名称: {nmval or '(未命名)'}")
-
-    def _parse_line_kml(path):
-        """解析单个 KML 的首个 LineString，返回 {name, coords}"""
-        t = ET.parse(path); r = t.getroot()
-        for pm in r.iter(KNS + "Placemark"):
-            ls = pm.find(KNS + "LineString")
-            if ls is None:
-                continue
-            nm = pm.find(KNS + "name")
-            nmval = nm.text.strip() if (nm is not None and nm.text) else ""
-            coords = [(float(p.split(",")[0]), float(p.split(",")[1]))
-                      for p in ls.find(KNS + "coordinates").text.strip().split()]
-            return {"name": nmval, "coords": coords}
-        return None
-
-    extra_lines = []  # 复合工区：附加测线（与边框共同渲染 + 参与总区域采样）
-    if args.lines:
-        for lp in [x.strip() for x in args.lines.split(",") if x.strip()]:
-            try:
-                lt = _parse_line_kml(lp)
-                if lt:
-                    extra_lines.append(lt)
-                    print(f"附加测线 KML: {lp} → 顶点数 {len(lt['coords'])} 名称 {lt['name'] or '(未命名)'}")
-            except Exception as e:
-                print(f"⚠️ 附加测线解析失败 {lp}: {repr(e)}")
+        print(f"ta_map 多边形顶点数: {len(poly)-1}")
+    lines = []   # 多线支持：每条测线独立 {name, coords}
+    for ln in (tmap.get("lines") or []):
+        coords = [(float(c[0]), float(c[1])) for c in (ln.get("coordinates") or [])]
+        if coords:
+            lines.append({"name": ln.get("name", ""), "coords": coords})
+            print(f"ta_map 线要素顶点数: {len(coords)} 名称: {ln.get('name') or '(未命名)'}")
+    extra_lines = []   # 兼容字段：ta_map 模式下无附加测线（测线已并入 lines）
 
     is_line = bool(lines) and not bool(poly)
     multi = is_line and len(lines) > 1
@@ -302,32 +291,13 @@ else:
     line = lines[0]["coords"] if lines else []
     line_name = lines[0]["name"] if lines else ""
 
-    # 附加作业点(--points)：KML 里多个 <Placemark><Point>（如炮点/检波点/预警点），
-    # 给出时【按作业点直接取数，不面/线采样】，与 --kml 边框/测线共同渲染（作业点模式）
-    pts = []; pt_names = []
-    if args.points and not args.data:
-        for pk in args.points.split(","):
-            pk = pk.strip()
-            if not pk:
-                continue
-            try:
-                proot = ET.parse(pk).getroot()
-            except Exception as e:
-                print(f"⚠️ 作业点 KML 解析失败 {pk}: {repr(e)}")
-                continue
-            for pm in proot.iter(KNS + "Placemark"):
-                pt = pm.find(KNS + "Point")
-                if pt is None:
-                    continue
-                c = pt.find(KNS + "coordinates")
-                if c is None or not c.text or not c.text.strip():
-                    continue
-                lon, lat, *_ = c.text.strip().split(",")
-                nm = pm.find(KNS + "name")
-                pts.append((float(lon), float(lat)))
-                pt_names.append(nm.text.strip() if (nm is not None and nm.text) else "")
-        if pts:
-            print(f"附加作业点(Point): {len(pts)} 个（按作业点直接取数）")
+    # 作业点（来自 ta_map points；含名称/经纬度，ta_id 在下方取数段按序匹配）
+    _tp = tmap.get("points") or []
+    pts = [(float(p["lon"]), float(p["lat"])) for p in _tp
+           if p.get("lon") is not None and p.get("lat") is not None]
+    pt_names = [p.get("name", "") for p in _tp]
+    if pts:
+        print(f"作业点(ta_map): {len(pts)} 个（按作业点直接取数）")
     is_points = bool(pts)
     is_line = is_line and not is_points
     multi = is_line and len(lines) > 1
@@ -548,10 +518,10 @@ else:
     # ---------- 2. 按目标区 ta_id 从 jozzon-mcp 批量取数 ----------
     # 数据源切换（2026-10-16）：Open-Meteo → jozzon-mcp（九章雷电网）。
     # 作业点 = wutan/kml/wutan_ta_map.json 里本项目注册的目标区（列表顺序对应作业点序号）；
-    # KML 仅用于地图几何展示（边框 / 测线），不再用于采样取数。
+    # 几何(边界/测线/作业点)与 ta_id 均来自 ta_map（见步骤 1），此处按目标区取数。
     ta_entries = load_ta_map(args.name)
     if ta_entries and all(e.get("ta_id") is not None for e in ta_entries):
-        # 用 ta_map 目标区覆盖 KML 采样得到的作业点（KML 仅保留几何）
+        # 作业点几何与 ta_id 统一由 ta_map 提供（步骤 1 已载入 pts/pt_names）
         samples = [(round(float(e["lon"]), 4), round(float(e["lat"]), 4)) for e in ta_entries]
         pt_names = [e.get("label") or f"作业点#{i+1}" for i, e in enumerate(ta_entries)]
         is_points = True          # 作业点即显式命名目标区，标签走 pt_names
