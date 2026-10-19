@@ -1,6 +1,6 @@
 ---
 name: weather-wutan-data
-description: 物探/野外项目2周天气看板生成器：输入由数据采集点构成的 KML（多个 <Placemark><Point>，如炮点/检波点），按采集点逐个从 Open-Meteo 拉取「下一整时起未来 2 周（14天）」逐小时预报（气温/降水/雨/阵雨/降雪/风速/阵风，m/s；并派生 liquid=rain+showers 与降水类型码 降雨/降雪/雨夹雪（结合气温，0℃ 以下按降雪）），生成关键指标 + 可点击地形图（采集点可联动展开未来2周逐要素曲线/柱状图）+ 物探作业影响建议的可交互中文 HTML（默认仅出 HTML）。兼容 KML 多边形边框（工区）与线要素（测线）。用于野外踏勘、钻井、地震勘探等项目的天气风险研判与汇报。
+description: 【遗留 · Open-Meteo 旧链路，仅用于按 KML 临时出图】物探/野外项目2周天气看板生成器：输入由数据采集点构成的 KML（多个 <Placemark><Point>，如炮点/检波点），按采集点逐个从 Open-Meteo 拉取「下一整时起未来 2 周（14天）」逐小时预报（气温/降水/雨/阵雨/降雪/风速/阵风，m/s；内部把 rain+showers 合并为降雨量，再结合气温判降水类型 降雨/降雪/雨夹雪），生成关键指标 + 可点击地形图 + 物探作业影响建议的可交互中文 HTML。**日常物探项目看板请走现行链路**：`weather-wutan-html`（build_dashboard.py）+ `weather-wutan-index`，由 `<SKILLS>/script/rerun_wutan.py` 编排，数据来自 **jozzon-mcp（九章雷电网）** 按 `wutan/kml/wutan_ta_map.json` 的 ta_id 取数（本技能不参与）。
 ---
 
 ## 环境占位符（跨平台 · 首次使用请先确认）

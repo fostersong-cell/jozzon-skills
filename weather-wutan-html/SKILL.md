@@ -74,6 +74,7 @@ description: 物探/野外项目2周天气看板「富媒体交互式 HTML」生
 - **三页签布局**：① 重点提示（48h 口径）；② 未来48小时（地形图 + 点击联动 48h 图）；③ 未来2周（地形图 + 固定四图，按住滑动换日）。
 - **降水柱基线铁律**：柱高一律以**零线 `base=Y(0)`** 为基线，不可用 `Hh-pt-pb`；判据 `v>0 || ptype`，柱高 `Math.max(base-Y(v),3)`，微量降雪柱顶标 `<0.1`。
 - **降水类型（0无/1降雨/2降雪/3雨夹雪）**：`ptype_of(liquid, snow, precip, temp)`，**温度优先**（`temp<0℃` 一律判 2，液态分量不参与判型）；`snowfall` 现为 **mm/h**（九章口径），**不再 ×10**；
+  其中 `liquid` 仍由 **rain+showers 相加**而来——jozzon-mcp 返回的是 **rain / showers 两列**，由 `weather-common/jozzonwx.py` 合并成 `rainfall`（见其 `res["rainfall"]=rain+showers`），`build_dashboard` 再按日累计为 `liquid`。**取数源已换 MCP，但这一步合并/判型仍在做**，不是 Open-Meteo 遗留。
   逐时 `points[].hx.{liq,snow,pt}`，逐日 `points[].series.{ptype,liquid,snow}`；`PT_FILL={1:"#2E86DE",2:"#5DD6E8",3:"#B07CD6"}`，兜底 `#9DB4C8`。
 - **自包含**：中文字体子集内嵌为 data-URI，不依赖外部字体；手机/浏览器直接打开。
 - **页头导航（2026-09-22 新增，2026-09-24 改版为左右分置）**：项目页 `<header>` 顶部 `.hdnav` 为 `display:flex;justify-content:space-between` 的左右两栏，含两个**相互独立**的链接——① 左栏 `.hdnav-l`（`flex:1 1 auto`）放 `a#backLink`（"← 返回总览"，`href="index.html"` 指向本类子总览，仅当 URL 带 `?from=index` 时显示，否则内联 JS 隐藏；**左栏常驻占位，故回链隐藏时右栏不会左移**）；② 右栏 `.hdnav-r`（`flex:0 0 auto`）放 `a.extlink` **高亮外链**（常驻显示，文本"北斗天气风险治理平台 ↗"，`href="https://leidian.wang"`，新窗口打开）。两者不是同一链接，互不影响。
