@@ -44,7 +44,7 @@ description: 石油工程（钻井/管线点位）天气看板「未来 2 周」
 ## 目录与数据流
 
 ```
-engineering/kml/all_points_info.md      ← 唯一数据源（2026-09-17 起不再使用任何 KML）
+engineering/kml/engineering_ta_map.json ← 唯一数据源（一级/二级/三级/点位/lon/lat/ta_id；2026-10-19 起不再使用任何 md 或 KML）
         │
         │ weather-engineering-data / build_points_data.py   （取数，未来 2 周 / 14 天）
         ▼

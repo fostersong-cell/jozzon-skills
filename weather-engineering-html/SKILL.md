@@ -28,7 +28,7 @@ description: 钻井工程井位天气看板生成器（与物探 weather-wutan-h
 
 > ⚠️ **遗留 Open-Meteo 井位脚本**（`build_dashboard.py`，直接抓 `api.open-meteo.com`）。
 > **石油工程现行主链路是 `weather-engineering-data`**（`build_points_data.py` + `render_points_html.py`：
-> 读 `engineering/kml/all_points_info.md`、按 `engineering_ta_map.json` 的 `ta_id` 调 **jozzon-mcp（九章雷电网）**、出无地图点位看板），
+> 读 `engineering/kml/engineering_ta_map.json`（点位 / 经纬度 / 层级 / ta_id 的唯一来源）、按 `ta_id` 调 **jozzon-mcp（九章雷电网）**、出无地图点位看板），
 > 由 `<SKILLS>/script/rerun_engineering.py` 编排。本技能仅在需要「**按井位 KML 临时出图**」时使用，**日常钻井点位看板不用它**。
 
 与物探 skill（一个工区一张含地图的多采样点看板）**生成模式完全不同**：

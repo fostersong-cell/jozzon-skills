@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""生成 wutan_ta_map.json 与 engineering_ta_map.json（数据源分别来自 wutan/kml 与 all_points_info.md）。
+"""【已停用 · 历史一次性脚本，请勿运行】生成 wutan_ta_map.json 与 engineering_ta_map.json。
+
+2026-10-19 起：本脚本的两路输入（物探 KML 目录、石油工程 all_points_info.md）已整体删除，
+两个 ta_map json 现为**自包含的唯一数据源**，点位增删改请直接编辑 json。
+主链路改用：<SKILLS>/script/rerun_wutan.py 与 <SKILLS>/script/rerun_engineering.py。
+保留本文件仅供追溯 ta_id 继承逻辑（按 (名称, 经纬度) 从旧 json 继承已回填的 ta_id）。
 
 2026-10-16 改造：**保留已回填的 ta_id**（按 (名称, 经纬度) 从现有 json 里继承），
 避免重跑把九章目标区 ID 抹成 null。原版硬编码 null，放在 /tmp 容易误跑丢数据。
@@ -14,6 +19,19 @@ EKML = os.path.join(BASE, "engineering", "kml")
 WP = os.path.join(BASE, "wutan", "kml", "wutan_ta_map.json")
 EP = os.path.join(BASE, "engineering", "kml", "engineering_ta_map.json")
 KNS = "{http://www.opengis.net/kml/2.2}"
+
+# ---------- 停用守卫（2026-10-19）----------
+# 输入已删：物探 KML 与 all_points_info.md 均不在 beidou 目录，硬跑只会报 FileNotFoundError。
+# 这里给出明确指引后直接退出，避免被误当成「主链路」使用。
+_REQUIRED = [os.path.join(EKML, "all_points_info.md")]
+_missing = [p for p in _REQUIRED if not os.path.exists(p)]
+if _missing:
+    raise SystemExit(
+        "本脚本已停用（2026-10-19）：all_points_info.md / 物探 KML 已整体移除，\n"
+        "  wutan_ta_map.json 与 engineering_ta_map.json 现为自包含的唯一数据源。\n"
+        "  日常取数请用：<SKILLS>/script/rerun_wutan.py、<SKILLS>/script/rerun_engineering.py\n"
+        "  缺失输入：\n    " + "\n    ".join(_missing)
+    )
 
 # (中文名, pin, 边框kml, 采集点kml) —— 与 rerun_wutan.py 保持一致
 PROJS = [
@@ -147,9 +165,9 @@ for line in md.splitlines():
     rows.append({"一级": cells[0], "二级": cells[1], "三级": cells[2], "点位": cells[3],
                  "lon": lon, "lat": lat, "ta_id": ta_of(prev_e, cells[3], lon, lat)})
 e_map = {
-    "_schema": ("石油工程井位/管线点位 → 九章目标区。每项含 all_points_info.md 全字段"
-                "（一级/二级/三级/点位）+ 经纬度 + ta_id（未注册为 null）。"
-                "build_points_data.py 按「点位」名匹配 ta_id 取数。"),
+    "_schema": ("石油工程井位/管线点位 → 九章目标区。自包含（2026-10-19 起不再依赖任何 md/KML）："
+                "每项含 一级/二级/三级/点位 + 经纬度 + ta_id（未注册为 null）。"
+                "build_points_data.py 直接读取本文件全部字段与 ta_id 取数。"),
     "_updated": datetime.date.today().isoformat(),
     "_note": ENG_NOTE,
     "points": rows,

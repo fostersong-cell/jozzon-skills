@@ -1,6 +1,6 @@
 ---
 name: weather-engineering-data
-description: 石油工程 / 钻井井位「未来 2 周」天气看板生成器（数据采集 + 渲染点位页，不含 index）。**现行链路**：① `build_points_data.py` 读 `engineering/kml/all_points_info.md`（含 `点位`/`经度`/`纬度`，可选一二级三级），按 `engineering_ta_map.json`（点位名 → 九章目标区 ta_id）**逐个 ta_id 调 jozzon-mcp（九章雷电网）**取「下一整时起未来 2 周」逐小时预报，每点位写一份独立 JSON；② `render_points_html.py` 离线渲染成可交互中文 HTML 看板。要素：温度 / 体感(UTCI) / 降雨(rain+showers) / 降雪(mm/h) / 均风 / 阵风 / 能见度，并派生降水类型码 降雨/降雪/雨夹雪（结合气温，0℃ 以下按降雪）。**图表口径**：48 小时图＝降水柱+均风/阵风/气温折线合并单图（**不含能见度**）；未来 2 周＝**固定四图 降水(降雨+降雪并列柱) / 气温(含体感虚线) / 阵风·均风 / 能见度**。用于钻井 / 管线等点位的天气风险研判与汇报。
+description: 石油工程 / 钻井井位「未来 2 周」天气看板生成器（数据采集 + 渲染点位页，不含 index）。**现行链路**：① `build_points_data.py` 读 `engineering/kml/engineering_ta_map.json`（**唯一数据源**，每项含 一级/二级/三级/点位/经纬度/ta_id），按各点位 `ta_id` **逐个调 jozzon-mcp（九章雷电网）**取「下一整时起未来 2 周」逐小时预报，每点位写一份独立 JSON；② `render_points_html.py` 离线渲染成可交互中文 HTML 看板。要素：温度 / 体感(UTCI) / 降雨(rain+showers) / 降雪(mm/h) / 均风 / 阵风 / 能见度，并派生降水类型码 降雨/降雪/雨夹雪（结合气温，0℃ 以下按降雪）。**图表口径**：48 小时图＝降水柱+均风/阵风/气温折线合并单图（**不含能见度**）；未来 2 周＝**固定四图 降水(降雨+降雪并列柱) / 气温(含体感虚线) / 阵风·均风 / 能见度**。用于钻井 / 管线等点位的天气风险研判与汇报。
 ---
 
 ## 环境占位符（跨平台 · 首次使用请先确认）
@@ -26,7 +26,7 @@ description: 石油工程 / 钻井井位「未来 2 周」天气看板生成器�
 
 > ⚠️ **本节及下面《输入模式》《模式一：单点》《采集点模式》描述的是遗留 Open-Meteo 脚本**
 > （`build_region_dashboard.py` / `build_weather_dashboard.py`，按 KML / 经纬度输入、**直接抓 Open-Meteo**），
-> **与现行「ta_id 点位链路」相互独立**。**石油工程现行主链路**见下方《模式：Markdown 点位表》与
+> **与现行「ta_id 点位链路」相互独立**。**石油工程现行主链路**见下方《模式：ta_map 点位表》与
 > 《渲染逐点看板》两节（`build_points_data.py` + `render_points_html.py`，走 jozzon-mcp 按 `ta_id` 取数、出无地图点位看板）。
 > 遗留脚本仅在「按 KML / 经纬度临时出一张单点或区域图」时使用，**日常钻井点位看板不用它**。
 
@@ -42,7 +42,7 @@ description: 石油工程 / 钻井井位「未来 2 周」天气看板生成器�
 | **面（工区）** | 项目名称 + KML 多边形 | `build_region_dashboard.py` | `{名称}工区.html`（+ 可选 `.pdf`） |
 | **线（测线）** | 项目名称 + KML 线要素 | `build_region_dashboard.py` | `{名称}测线.html`（+ 可选 `.pdf`） |
 | **单点** | 项目名称 + 经纬度 | `build_weather_dashboard.py` | `{名称}{日期}.html`（+ 可选 `.pdf`） |
-| **Markdown 点位表** | 点位汇总 Markdown（含 `点位`/`经度 (DD)`/`纬度 (DD)` 列） | `build_points_data.py` | `{拼音}.json`（逐点，落 `engineering/data/`，不生成 HTML） |
+| **ta_map 点位表（现行）** | `engineering/kml/engineering_ta_map.json`（含 `一级/二级/三级/点位/lon/lat/ta_id`） | `build_points_data.py` | `{拼音}.json`（逐点，落 `engineering/data/`，不生成 HTML） |
 
 > 文件名规则：**`{项目名称}{当前日期}.pdf`**（单点）/ **`{项目名称}采集点{当前日期}.pdf`**（采集点）/ **`{项目名称}工区{当前日期}.pdf`**（面）/ **`{项目名称}测线{当前日期}.pdf`**（线）。当前日期取运行当天 `YYYY-MM-DD`。KML 自动识别：含 `<Point>` 且无 Polygon/LineString → 采集点模式；`<Polygon>` → 工区；`<LineString>` → 测线。
 
@@ -89,56 +89,63 @@ KML 自动判断类型：
 
 ---
 
-## 模式：Markdown 点位表（钻井平台 / 管线汇总 → 逐点数据文件）
+## 模式：ta_map 点位表（钻井平台 / 管线汇总 → 逐点数据文件）
 
-适用于已有一张「点位汇总表」Markdown（如 `engineering/kml/all_points_info.md`，表头含 `点位`/`经度 (DD)`/`纬度 (DD)`，可选 `一级`/`二级`/`三级` 层级标签）。脚本解析出全部点位坐标，**批量取数后为每个点位写出一份独立 JSON 数据文件**（不生成 HTML，纯数据，供后续看板/分析复用）。
+点位唯一来源是 `engineering/kml/engineering_ta_map.json`（2026-10-19 起）。该文件每项含 `一级/二级/三级/点位/lon/lat/ta_id`，**自包含、不依赖任何外部表**；原 `all_points_info.md` 与全部 KML 已废弃删除（仅 `beidou/_kml_backup_20261019/` 留备份）。脚本按 `ta_id` 批量取数，**为每个点位写出一份独立 JSON 数据文件**（不生成 HTML，纯数据，供后续看板/分析复用）。
 
 ```bash
 <PY> \
   <SKILLS>/weather-engineering-data/scripts/build_points_data.py \
-  --md "engineering/kml/all_points_info.md" \
   --datadir "engineering/data" \
   --name "石油工程" \
   --days 14
 ```
 
 说明：
-- `--md`：点位汇总 Markdown 路径，默认 `engineering/kml/all_points_info.md`（相对项目根目录 `beidou/`）。表头用子串匹配 `点位`/`经度`/`纬度` 定位列，顺序无要求。
+- `--tamap`：点位表路径，默认 `<datadir>/../kml/engineering_ta_map.json`（即 `engineering/kml/engineering_ta_map.json`）。**点位名 / 经纬度 / 层级 / ta_id 全部取自这里**，不再有任何 Markdown 解析。
+- `--md`：**已废弃**，仅为兼容旧命令保留的占位参数，传了也不读取、不生效（原 Markdown 点位表入口，md 文件已删）。
 - `--datadir`：逐点 JSON 输出目录，默认 `engineering/data/`（与井位看板 `*_data.json` 同目录，但文件名用拼音且无 `_data` 后缀，互不冲突；渲染时按 `meta.kind=="point"` 过滤，仅取点位表数据）。
 - `--days` 默认 14（未来 2 周），默认从**下一整点**起（`--from-today` 从当前整点起）；`timezone=Asia/Shanghai`。
 - 文件名用拼音（保留数字/字母，如 `hongye7-5hf.json`）；本次运行内重名自动追加 `-2/-3`。
 - 每个 JSON 含：
-  - `meta`：`kind:"point"` / 点位名 / **`ta_id`** / 一二级三级层级 / 经纬度 / `region` / `source`(md 文件名) / `generated_at` / `timezone` / `start_date` / `end_date` / **`model:"jozzon-mcp(九章雷电网)"`**。
+  - `meta`：`kind:"point"` / 点位名 / **`ta_id`** / 一二级三级层级 / 经纬度 / `region` / `source`（ta_map 文件名） / `generated_at` / `timezone` / `start_date` / `end_date` / **`model:"jozzon-mcp(九章雷电网)"`**。
   - `hourly`（逐小时，**现行要素集**）：`time` / `temperature_2m` / **`rainfall`（= rain+showers）** / `snowfall`（**mm/h**）/ `wind_speed_10m` / `wind_gusts_10m` / **`apparent_temperature`（UTCI 体感）** / **`visibility`（m，取自 `x1_visibility` 的 km×1000；**仅前 162h 有值，其余为 `null`**）** / `ptype`。
   - `daily`：逐日 `tempMin/tempMax`、`rainfall`、`snowfall`、`ptype`、`windMax`、`gustMax`、`apparentMin/apparentMax`、`visMin`。
   - `summary`：`totalRainfall`、`maxGust`、`maxWind`、`minTemp`、`maxTemp`、`minApparent/maxApparent`、`minVis`、`maxRainfallDay`、以及小时级峰值 `pHourMax`/`snowHourMax`/`gustHourMax`（供 index / 汇总套用新分级阈值）。
   ⚠️ **`summary` 里的 maxGust/maxTemp/minTemp/pHourMax/snowHourMax 全是「整窗 14 天」值**，不能直接当「未来 48 小时」用——48h 峰值必须在消费侧按 `hourly[:48]` 现算。
-- **点位 → ta_id 映射**：`engineering_ta_map.json`（位于 `engineering/kml/`；由 `<SKILLS>/script/build_ta_maps.py` 生成；可用 `--tamap` 指定）。**没有 ta_id 的点位会被跳过并打印清单**；若一个都没有则直接报错退出。取数走 jozzon-mcp，**不再有 Open-Meteo 配额 / 429 问题**。
+- **点位 → ta_id 映射**：内嵌于 `engineering/kml/engineering_ta_map.json` 本身（每项自带 `ta_id`；可用 `--tamap` 指定别的路径）。**`ta_id` 为 `null` 的点位会被跳过并打印清单**；若一个都没有则直接报错退出。取数走 jozzon-mcp，**不再有 Open-Meteo 配额 / 429 问题**。
+- ⚠️ 历史上一度由 `<SKILLS>/script/build_ta_maps.py` 从 `all_points_info.md` 生成该 json；**md 已删，该生成器已停用**（运行会因找不到输入文件报错），点位表的增删改请直接编辑 `engineering_ta_map.json`。
 
-### 单点位增量重跑（2026-09-25 新增）
+### 单点位增量刷新（2026-10-19 改：临时 ta_map，不再用临时 md）
 
-只想刷新**单个点位**（如源表刚给它加了队号）时，`build_points_data.py` **没有 `--only` 参数**——它遍历 md 里的全部点位。此时**不要**跑全量（会重写其余点位、浪费配额），改用「临时 md」把点位缩到 1 个：
+只想刷新**单个点位**（如刚回填了 `ta_id`）时，`build_points_data.py` **没有 `--only` 参数**——它遍历 `--tamap` 里的全部点位。做法：生成一份只含该点位的临时 ta_map 喂给它（其余 JSON 不动），再用 `--only` 只重渲染该点位 HTML。
 
 ```bash
-TMP=<TMP>/all_points_one.md
-{ head -4 "engineering/kml/all_points_info.md";        # 标题 + 表头行 + 分隔行
-  echo "| 中原工程 | 西南钻井分公司 | 70112钻井队 | 元陆36井 | 106.547711 | 31.952829 |";
-} > "$TMP"
-
 PY=<PY>
 cd "<BEIDOU>"
+TMP=<TMP>/ta_map_one.json
+$PY - "$TMP" <<'EOF'
+import json, sys
+d = json.load(open("engineering/kml/engineering_ta_map.json", encoding="utf-8"))
+name = "元陆36井"                                  # ← 改成要刷新的点位名
+d["points"] = [p for p in d["points"] if (p.get("点位") or p.get("name")) == name]
+assert d["points"], "ta_map 里找不到点位: " + name
+json.dump(d, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+print("临时 ta_map 已写:", sys.argv[1], "→", d["points"][0]["点位"])
+EOF
+
 $PY <SKILLS>/weather-engineering-data/scripts/build_points_data.py \
-    --md "$TMP" --datadir engineering/data --days 14            # 只重写这 1 个 JSON，其余 16 个不动
+    --tamap "$TMP" --datadir engineering/data --days 14     # 只重写这 1 个 JSON，其余点位不动
 $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
     --datadir engineering/data --htmldir engineering/html --only yuanlu36jing
 ```
 
 要点：
-- 临时 md 必须原样保留原表头前 4 行（表头靠子串匹配 `点位`/`经度`/`纬度`），只替换数据行。
+- 临时 ta_map 保持原 `{"points":[...]}` 结构，只过滤 `points` 数组；目标点位必须已有 `ta_id`，否则会被跳过。
+- ⚠️ **不要再用「临时 md + `--md`」的老做法**：`--md` 已被忽略，那样会连带跑全量全部点位。
 - `render_points_html.py` **有** `--only <slug>`，只重渲染该点位的 HTML。
 - index 需**单独**重建（`weather-engineering-index` 的 `build_points_index.py`），渲染器不再顺带生成。
 - 只重跑一个点位会造成**窗口不一致**：该点 `meta.start_date` 是重跑当天，其余点位仍是上一次的（如 09-24 起）。如需全部对齐到同一窗口，跑全量 `<SKILLS>/script/rerun_engineering.py`（index 由 `weather-engineering-index` 生成 `engineering/html/index.html`，无独立顶层脚本）。
-- 取数前先 probe 配额（见运维要点），避免 429。
 
 ---
 
@@ -249,8 +256,8 @@ $PY <SKILLS>/weather-engineering-data/scripts/render_points_html.py \
 ## 工作流（agent 执行步骤）
 
 **现行主链路（钻井点位看板，默认走这条）**：
-1. `<SKILLS>/script/rerun_engineering.py` 一条龙：读 `engineering/kml/all_points_info.md` → 按 `engineering_ta_map.json` **逐个 ta_id 调 jozzon-mcp 取数**写 `engineering/data/{拼音}.json` → `render_points_html.py` 渲染 `engineering/html/{拼音}.html` → 调 `weather-engineering-index` 建 `engineering/html/index.html` 并出 2 天风险 md。
-2. 只刷**单点**：用「临时 md」把点位缩到 1 个再跑 `build_points_data.py`，接着 `render_points_html.py --only <slug>`（详见上方《单点位增量重跑》）。
+1. `<SKILLS>/script/rerun_engineering.py` 一条龙：读 `engineering/kml/engineering_ta_map.json` → **逐个 ta_id 调 jozzon-mcp 取数**写 `engineering/data/{拼音}.json` → `render_points_html.py` 渲染 `engineering/html/{拼音}.html` → 调 `weather-engineering-index` 建 `engineering/html/index.html` 并出 2 天风险 md。
+2. 只刷**单点**：按上方《单点位增量刷新》生成只含该点位的临时 ta_map，`build_points_data.py --tamap <临时json>` 取数，接着 `render_points_html.py --only <slug>`。
 3. 交付前校验：`check_rain_eng.py`（Python 规则回归）+ `check_rain_eng_page.js`（jsdom 页面级）；如需浏览器级再用 playwright 截图或物探侧 `validate.py`（**判据：无 JS 报错、无「⚠ 链路预览」合成数据提示条、`body.sevN` 正常**）。
    ⚠️ **旧 schema 的 json 会让 `sev_of` KeyError 崩**（缺 `daily[].rainfall`）——单点重渲染请把目标 json 单独放临时 datadir，别整个 datadir 一起渲。
 4. 用 `present_files` 交付 HTML。
